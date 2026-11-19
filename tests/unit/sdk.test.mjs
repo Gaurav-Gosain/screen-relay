@@ -108,6 +108,80 @@ test('custom HTTP transport enforces the overall request deadline', async () => 
   }
 });
 
+function incompleteResponseServer() {
+  return createServer((request, response) => {
+    response.on('error', () => {});
+    response.writeHead(200, { 'content-type': 'application/json', 'content-length': '128' });
+    response.write('{"version":1', () => { if (response.socket) response.socket.end(); else response.destroy(); });
+  });
+}
+
+function oversizedResponseServer(status) {
+  return createServer((request, response) => {
+    response.on('error', () => {});
+    response.writeHead(status, { 'content-type': 'application/json' });
+    const chunk = 'x'.repeat(64 * 1024);
+    const limit = 8 * 1024 * 1024 + chunk.length * 2;
+    let sent = 0;
+    const pump = () => {
+      try {
+        while (sent < limit && !response.destroyed) {
+          sent += chunk.length;
+          if (!response.write(chunk)) { response.once('drain', pump); return; }
+        }
+        if (!response.destroyed) response.end();
+      } catch {}
+    };
+    pump();
+  });
+}
+
+async function withServer(server, run) {
+  server.listen(0, '127.0.0.1');
+  await once(server, 'listening');
+  try { await run(`http://127.0.0.1:${server.address().port}`); }
+  finally {
+    server.closeAllConnections();
+    await new Promise(resolve => server.close(resolve));
+  }
+}
+
+test('custom transport returns a normal response', async () => {
+  const server = createServer((request, response) => {
+    response.writeHead(200, { 'content-type': 'application/json' });
+    response.end('{"version":7}');
+  });
+  await withServer(server, async (url) => {
+    assert.deepEqual(await createClient({ url, connect: '127.0.0.1' }).capabilities(), { version: 7 });
+  });
+});
+
+for (const [transport, options] of [['fetch', {}], ['custom', { connect: '127.0.0.1' }]]) {
+  test(`${transport} transport reports an incomplete response as disconnected`, async () => {
+    await withServer(incompleteResponseServer(), async (url) => {
+      await assert.rejects(capabilities({ ...options, url, timeout: 5000 }), {
+        code: 'DISCONNECTED', reason: 'disconnected',
+      });
+    });
+  });
+}
+
+test('custom transport bounds success and error bodies', async () => {
+  for (const status of [200, 500]) {
+    await withServer(oversizedResponseServer(status), async (url) => {
+      await assert.rejects(createClient({ url, connect: '127.0.0.1', timeout: 10000 }).capabilities(), { code: 'PROTOCOL_ERROR' });
+    });
+  }
+});
+
+test('fetch transport bounds success and error bodies', async () => {
+  for (const status of [200, 500]) {
+    await withServer(oversizedResponseServer(status), async (url) => {
+      await assert.rejects(capabilities({ url, timeout: 10000 }), { code: 'PROTOCOL_ERROR' });
+    });
+  }
+});
+
 test('control connections reject unsupported transport overrides', async () => {
   await assert.rejects(connect({ ca: 'ca.pem' }), { code: 'INVALID_ARGUMENT', message: /do not support ca, certificate, or connect/ });
   await assert.rejects(connect({ certificate: 'cert.pem' }), { code: 'INVALID_ARGUMENT', message: /do not support ca, certificate, or connect/ });
@@ -224,6 +298,20 @@ test('JSON parse errors and body timeouts have stable codes', async () => {
   } finally { globalThis.fetch = original; }
 });
 
+test('aborting during a fetch response body reports cancellation', async () => {
+  const original = globalThis.fetch;
+  const abort = new AbortController();
+  try {
+    globalThis.fetch = async (_url, { signal }) => new Response(new ReadableStream({
+      pull(body) {
+        abort.abort();
+        body.error(signal.reason);
+      },
+    }, { highWaterMark: 0 }));
+    await assert.rejects(capabilities({ signal: abort.signal }), { code: 'CANCELED', reason: 'canceled' });
+  } finally { globalThis.fetch = original; }
+});
+
 test('HTTP error bodies distinguish screenshot contention from service failure', async () => {
   const original = globalThis.fetch;
   try {
@@ -243,7 +331,7 @@ test('screenshot body failures and file failures have stable codes', async () =>
   try {
     const session = await connect();
     globalThis.fetch = async () => new Response(new ReadableStream({ pull(controller) { controller.error(new Error('broken body')); } }));
-    await assert.rejects(session.screenshot(), { code: 'NETWORK_ERROR' });
+    await assert.rejects(session.screenshot(), { code: 'DISCONNECTED', reason: 'disconnected' });
     globalThis.fetch = async () => new Response(new Uint8Array([1, 2, 3]));
     await assert.rejects(session.screenshot('/nonexistent-directory/screen.png'), { code: 'IO_ERROR' });
     session.close();

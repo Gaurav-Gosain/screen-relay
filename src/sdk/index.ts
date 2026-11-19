@@ -78,6 +78,34 @@ function decode<Result>(data: Buffer, binary: boolean): Result {
   catch { throw new RelayError('protocol_error', 'Invalid JSON response'); }
 }
 
+const MAX_RESPONSE_BYTES = 8 * 1024 * 1024;
+
+function disconnectedResponse(): RelayError {
+  return new RelayError('disconnected', 'The connection closed before the response completed.');
+}
+
+/** Reads a fetch response body while keeping it under the shared size cap. */
+async function readResponseBody(response: Awaited<ReturnType<typeof fetch>>): Promise<Buffer> {
+  const stream = response.body;
+  if (!stream) return Buffer.alloc(0);
+  const chunks: Uint8Array[] = [];
+  let size = 0;
+  const reader = stream.getReader();
+  try {
+    for (;;) {
+      const chunk = await reader.read();
+      if (chunk.done) break;
+      size += chunk.value.length;
+      if (size > MAX_RESPONSE_BYTES) {
+        void reader.cancel().catch(() => {});
+        throw new RelayError('protocol_error', 'Response exceeds 8 MiB');
+      }
+      chunks.push(chunk.value);
+    }
+  } finally { reader.releaseLock(); }
+  return Buffer.concat(chunks, size);
+}
+
 function nodeRequest<Result>(server: Server, where: Extract<Plan, { kind: 'node' }>, path: string, binary: boolean, body?: Uint8Array): Promise<Result> {
   const base = server.base;
   const requestHeaders = headers(server, body);
@@ -95,19 +123,40 @@ function nodeRequest<Result>(server: Server, where: Extract<Plan, { kind: 'node'
     agent: where.agent,
   };
   return new Promise((resolve, reject) => {
+    let settled = false;
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    const settle = (run: () => void) => {
+      if (settled) return;
+      settled = true;
+      if (timer) clearTimeout(timer);
+      run();
+    };
+    const fail = (error: unknown) => settle(() => {
+      if (server.signal?.aborted) reject(new RelayError('canceled', 'Request canceled.'));
+      else if (error instanceof RelayError) reject(error);
+      else reject(networkError(error));
+    });
+    const incomplete = () => fail(disconnectedResponse());
     const transport = base.protocol === 'https:' ? httpsRequest : httpRequest;
     const sent = transport(options, (response) => {
       const chunks: Buffer[] = [];
       let size = 0;
       response.on('data', (chunk: Buffer) => {
+        if (settled) return;
         size += chunk.length;
-        if (size > 8 * 1024 * 1024) sent.destroy(new RelayError('protocol_error', 'Response exceeds 8 MiB'));
-        else chunks.push(chunk);
+        if (size > MAX_RESPONSE_BYTES) {
+          settle(() => reject(new RelayError('protocol_error', 'Response exceeds 8 MiB')));
+          sent.destroy();
+          return;
+        }
+        chunks.push(chunk);
       });
-      response.once('end', () => {
-        clearTimeout(timer);
+      response.once('error', incomplete);
+      response.once('aborted', incomplete);
+      response.once('close', () => { if (!response.complete) incomplete(); });
+      response.once('end', () => settle(() => {
         const status = response.statusCode ?? 0;
-        const data = Buffer.concat(chunks);
+        const data = Buffer.concat(chunks, size);
         if (status >= 400) {
           let detail: { error?: string; index?: number } | null = null;
           try { detail = JSON.parse(data.toString('utf8')); } catch {}
@@ -119,16 +168,15 @@ function nodeRequest<Result>(server: Server, where: Extract<Plan, { kind: 'node'
           return;
         }
         try { resolve(decode<Result>(data, binary)); } catch (error) { reject(error); }
-      });
+      }));
     });
-    const timer = setTimeout(() => sent.destroy(new RelayError('timeout', 'The request timed out.')), server.timeout);
-    sent.once('timeout', () => sent.destroy(new RelayError('timeout', 'The request timed out.')));
-    sent.once('error', (error) => {
-      clearTimeout(timer);
-      if (server.signal?.aborted) reject(new RelayError('canceled', 'Request canceled.'));
-      else if (error instanceof RelayError) reject(error);
-      else reject(networkError(error));
-    });
+    const timeout = () => {
+      fail(new RelayError('timeout', 'The request timed out.'));
+      sent.destroy();
+    };
+    timer = setTimeout(timeout, server.timeout);
+    sent.once('timeout', timeout);
+    sent.once('error', fail);
     if (body !== undefined) sent.write(Buffer.from(body));
     sent.end();
   });
@@ -145,45 +193,26 @@ async function request<Result>(
   const deadline = new Promise<never>((_, reject) => {
     timer = setTimeout(() => { controller.abort(); reject(new RelayError('timeout', 'The request timed out.')); }, server.timeout);
   });
+  const fail = (error: unknown, fallback: (error: unknown) => RelayError): never => {
+    if (server.signal?.aborted) throw new RelayError('canceled', 'Request canceled.');
+    if (controller.signal.aborted) throw new RelayError('timeout', 'The request timed out.');
+    if (error instanceof RelayError) throw error;
+    throw fallback(error);
+  };
   const operation = (async () => {
-    try {
-      const response = await fetch(new URL(path, server.base), {
-        signal: server.signal ? AbortSignal.any([controller.signal, server.signal]) : controller.signal,
-        redirect: 'error', headers: headers(server, body),
-        method: body === undefined ? 'GET' : 'POST', body: body === undefined ? undefined : Buffer.from(body),
-      });
-      if (!response.ok) {
-        let detail: { error?: string; index?: number } | null = null;
-        try { detail = await response.json(); } catch (error) { if (!(error instanceof SyntaxError)) throw error; }
-        throw responseError(response.status, detail);
-      }
-      if (!binary) {
-        try { return await response.json() as Result; }
-        catch (error) { if (error instanceof SyntaxError) throw new RelayError('protocol_error', 'Invalid JSON response'); throw error; }
-      }
-      if (!response.body) throw new RelayError('protocol_error', 'Missing screenshot body');
-      const chunks: Uint8Array[] = [];
-      let size = 0;
-      const reader = response.body.getReader();
-      try {
-        for (;;) {
-          const chunk = await reader.read();
-          if (chunk.done) break;
-          size += chunk.value.length;
-          if (size > 8 * 1024 * 1024) {
-            controller.abort();
-            throw new RelayError('protocol_error', 'Screenshot exceeds 8 MiB');
-          }
-          chunks.push(chunk.value);
-        }
-      } finally { reader.releaseLock(); }
-      return Buffer.concat(chunks, size) as Result;
-    } catch (error) {
-      if (error instanceof RelayError) throw error;
-      if (server.signal?.aborted) throw new RelayError('canceled', 'Request canceled.');
-      if (controller.signal.aborted) throw new RelayError('timeout', 'The request timed out.');
-      throw networkError(error);
+    const response = await fetch(new URL(path, server.base), {
+      signal: server.signal ? AbortSignal.any([controller.signal, server.signal]) : controller.signal,
+      redirect: 'error', headers: headers(server, body),
+      method: body === undefined ? 'GET' : 'POST', body: body === undefined ? undefined : Buffer.from(body),
+    }).catch(error => fail(error, networkError));
+    if (response.ok && binary && !response.body) throw new RelayError('protocol_error', 'Missing screenshot body');
+    const data = await readResponseBody(response).catch(error => fail(error, disconnectedResponse));
+    if (!response.ok) {
+      let detail: { error?: string; index?: number } | null = null;
+      try { detail = JSON.parse(data.toString('utf8')); } catch {}
+      throw responseError(response.status, detail);
     }
+    return decode<Result>(data, binary);
   })();
   try { return await Promise.race([operation, deadline]); } finally { clearTimeout(timer); }
 }

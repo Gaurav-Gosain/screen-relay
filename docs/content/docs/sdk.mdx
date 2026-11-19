@@ -135,7 +135,7 @@ Pass these options to `createClient`, the standalone functions, or `connect`. Co
 | `busy` | Another input owner, a full input queue, 32 pending session requests, or another screenshot. Wait for it to finish before retrying. |
 | `unauthorized`, `forbidden` | The engine rejected the token, host, or origin. Check the connection settings. |
 | `unreachable`, `timeout` | Check the URL, network, and TLS certificate. Increase `timeout` if needed. |
-| `disconnected` | The control session closed or was lost. Connect again. |
+| `disconnected` | The control session closed or an HTTP response ended early. If the control session closed, connect again. For input calls, check a screenshot before retrying. |
 | `control_taken` | A viewer chose **Take control**, which ended the control session. Pending input and later calls to `session.input()` and `session.screenshot()` reject with this reason. `session.capabilities()` and `session.status()` still make independent HTTP requests. Connect again after the viewer releases control. |
 | `invalid_input`, `invalid_option` | Check the URL, token, input, and options. |
 | `unsupported_input` | The backend cannot apply the event or type the character. Change the input or keyboard layout. |
