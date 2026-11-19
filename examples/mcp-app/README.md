@@ -35,7 +35,7 @@ In HTTP mode, each MCP session keeps its own state. `desktop_screenshot` capture
 
 An idle session closes after 30 minutes, and a later request that carries its id returns `404 Session not found`. Set `MCP_SESSION_IDLE_MS` to change the timeout in milliseconds. A host that reconnects without closing its previous session does not keep that session alive.
 
-The HTTP mode listens on loopback only, rejects any request whose `Host` is not this server, and rejects an `Origin` that is not served from this machine. That stops DNS rebinding from reaching the desktop tools while letting a local host such as `http://localhost:8080` connect.
+The HTTP mode listens on loopback only, rejects any request whose `Host` is not this server, and rejects an `Origin` that is not served from this machine. That stops DNS rebinding from reaching the desktop tools while letting a local host such as `http://localhost:8081` connect.
 
 For the ext-apps basic host:
 
@@ -44,7 +44,9 @@ cd /path/to/ext-apps/examples/basic-host
 npm install && npm run start
 ```
 
-Open `http://localhost:8080`, choose `open_desktop`, and call it with the viewer URL. Use `desktop_screenshot` afterwards to capture the same session.
+Open `http://localhost:8081`, choose `open_desktop`, and call it with the viewer URL. Use `desktop_screenshot` afterwards to capture the same session.
+
+The host serves its page from a loopback HTTP origin, so allow `http://localhost:8081` when you start the relay. See [Allow the app origin](#allow-the-app-origin).
 
 Set `SCREEN_RELAY_TOKEN` in the MCP server environment. The server uses it to request a one-hour watch grant and sends only the grant to the viewer in `_meta`, outside model-visible content. To allow input from the viewer, set `SCREEN_RELAY_VIEWER_SCOPE=control` before starting the MCP server. Neither grant enables clipboard access. Reopening the same desktop reuses the current grant until it expires. After expiry, run `open_desktop` again to renew access. The screenshot and automation tools keep their existing server-side permissions.
 
@@ -81,6 +83,22 @@ It reads the session named by `SCREEN_RELAY_SESSION_NAME`, which defaults to `de
 ```
 
 agent-desktop reads the accessibility tree, so it only sees apps that publish one. A GTK app started on the desktop bus with `GTK_MODULES=gail:atk-bridge` appears in `list-windows`; SDL games such as Doom never do. agent-browser controls its own headless Chrome, so it is unaffected by what the desktop shows.
+
+## Allow the app origin
+
+The engine allows the configured relay origin by default. When your MCP host serves the viewer from another origin, add that exact origin with `--allow-origin`. Use an HTTPS origin for a page on a remote host, or a loopback HTTP origin such as `http://localhost:8081` for a page served on your machine. For the sandbox verification below, the default test origin is `https://relay-test.claudemcpcontent.com`. Set `SCREEN_RELAY_EMBED_ORIGIN` if you use a different one, and allow that same origin when you start the relay.
+
+```sh
+screen-relay up -d --bind 0.0.0.0 --public https://your-sandbox.vercel.run --allow-origin https://relay-test.claudemcpcontent.com
+```
+
+The allowlist applies to the WebSocket upgrade. It does not enable cross-origin browser HTTP requests. The embedded viewer streams over WebSocket, and the MCP server handles screenshots separately.
+
+For the basic host, allow its loopback origin instead:
+
+```sh
+screen-relay up -d --bind 0.0.0.0 --public https://your-sandbox.vercel.run --allow-origin http://localhost:8081
+```
 
 ## Verification
 

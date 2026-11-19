@@ -32,6 +32,7 @@ screen-relay up -d --name demo --port 8084
 | `--backend x11\|wayland\|macos\|windows` | On Linux, default `x11` when available, else `wayland`. Without a configured backend, a display without a colon selects Wayland. On macOS, `macos`. On Windows, `windows`. |
 | `--output NAME` | Wayland output name, a macOS display ID, or a Windows display name such as `'\\.\DISPLAY2'`. Default: first output, the main display on macOS, or the primary display on Windows. Not valid on X11. |
 | `--public URL` | HTTPS origin. Generates a token. Requires a TLS proxy unless direct TLS is configured. |
+| `--allow-origin ORIGINS` | Comma-separated exact origins for browser WebSocket connections, in addition to the `--public` origin or loopback. This does not enable cross-origin browser HTTP access. Use lowercase `https://HOST[:PORT]` for any host, or `http://localhost[:PORT]` and `http://127.0.0.1[:PORT]` for a page served on the machine itself. No wildcards. Generates a token. Env: `SCREEN_RELAY_ALLOW_ORIGIN`. See [Browser origins](/docs/remote-access#browser-origins). |
 | `--tls-cert FILE`, `--tls-key FILE` | Serve TLS directly. Both are required. |
 | `--bind ADDR` | Listen address. Default `127.0.0.1`, or `0.0.0.0` with `--public`. Other addresses generate a token. |
 | `--timeout S` | Engine and desktop readiness timeout in seconds. Default `30`; must be positive. |
@@ -425,7 +426,7 @@ Each `next` entry has `command` and `argv`. `data` can contain `component`, `log
 | `invalid_option`, `unknown_command`, `missing_input` | Unknown option, command, or missing input. Check help. When `up` needs setup and there is no terminal, run `screen-relay install --yes` or pass `--yes` to `up`. |
 | `missing_command` | `run` needs an app; place it after `--`. |
 | `unauthorized` | Token missing or wrong. Check `--token-file`. |
-| `forbidden` | Host or Origin rejected. Use public origin or loopback. |
+| `forbidden` | Host or Origin rejected. Use the `--public` origin or a loopback page whose origin matches the address it connects to, or list a browser page's origin in `--allow-origin`. |
 | `unsupported_input` | Backend cannot produce the input. Change input or keyboard layout. |
 | `clipboard_unavailable` | The desktop has no clipboard the engine can use, or the app that owns it did not answer. Check `capabilities.clipboard` in `screen-relay status --json`. |
 | `busy` | Input is owned, the queue is full, or a screenshot is in progress. Release control or retry. |

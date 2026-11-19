@@ -13,7 +13,7 @@ screen-relay install [--backend x11|wayland|all|macos|windows] [--desktop xfce|n
          [--config FILE] [--yes]
 screen-relay up [-d] [--name NAME] [--config FILE] [--port PORT] [--desktop xfce|none|COMMAND]
          [--display DISPLAY] [--backend x11|wayland|macos|windows] [--output NAME|DISPLAY_ID]
-         [--public HTTPS_URL] [--tls-cert FILE --tls-key FILE]
+         [--public HTTPS_URL] [--allow-origin ORIGINS] [--tls-cert FILE --tls-key FILE]
          [--bind ADDRESS] [--timeout SECONDS] [--yes]
 screen-relay down [--name NAME]
 screen-relay logs [component] [--name NAME] [-f|--follow]
@@ -33,7 +33,8 @@ screen-relay doctor [--config FILE]
   - `--backend x11|wayland|macos|windows`: on Linux, defaults to `x11` when the engine has it, else `wayland`. A `--display` without a colon, such as `wayland-1`, selects `wayland` on its own. On macOS the only backend is `macos`, and on Windows it is `windows`. `x11` and `wayland` fail there with `invalid_input`, and `macos` fails on Linux the same way.
   - `--output NAME|DISPLAY_ID`: capture this Wayland output by name, a macOS display by its CGDirectDisplayID, or a Windows display such as `'\\.\DISPLAY2'`. `up` fails on x11.
   - `--yes`: when setup is needed, set it up without asking. Without a terminal, `up` never prompts and fails with `missing_input` unless `--yes` is given.
-  - `--public HTTPS_URL`: advertises an HTTPS origin. Expects a TLS proxy unless `--tls-cert` is set.
+  - `--public HTTPS_URL`: advertises an HTTPS origin. Expects a TLS proxy unless `--tls-cert` is set. Browser pages must be served from this origin, a loopback page connecting to the same address, or an origin in `--allow-origin`.
+  - `--allow-origin ORIGINS`: comma-separated exact origins whose browser pages may also connect: lowercase `https://HOST[:PORT]` for any host, or `http://localhost[:PORT]` and `http://127.0.0.1[:PORT]` for a page served on the machine itself. No wildcards. Creates a token. Env: `SCREEN_RELAY_ALLOW_ORIGIN`.
   - Backend setup: [Wayland](wayland.md) and [macOS](macos.md).
 - `down` stops the session and everything it started. On Windows, apps started with `run` keep running. It is safe to repeat. JSON outcome: `stopped` or `unchanged`.
 - `logs` prints the last 200 lines of one component (`display`, `dbus`, `desktop`, `engine`, `apps`), or of every component log. `-f` follows; it cannot be combined with `--json`.

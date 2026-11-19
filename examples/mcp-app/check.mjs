@@ -151,7 +151,7 @@ try {
     upgrade.on("response", (response) => {
       clearTimeout(timer);
       response.resume();
-      reject(new Error(`Stream returned HTTP ${response.statusCode}`));
+      reject(new Error(`Stream returned HTTP ${response.statusCode}; check the relay browser Origin allowlist`));
     });
     upgrade.on("upgrade", (response, socket) => {
       clearTimeout(timer);

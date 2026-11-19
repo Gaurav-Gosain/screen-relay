@@ -1,5 +1,5 @@
 import { cmdClick, cmdClipboard, cmdInput, cmdKey, cmdMove, cmdScreenshot, cmdScroll, cmdType } from './client.js';
-import { BACKENDS } from './config.js';
+import { BACKENDS, allowedOrigins } from './config.js';
 import { cmdDoctor } from './host/doctor.js';
 import { cmdDown, cmdLogs, cmdRun, cmdStatus, cmdUp, COMPONENTS } from './host/session_commands.js';
 import { cmdInstall } from './host/setup.js';
@@ -75,6 +75,7 @@ export const commands: Record<string, Command> = {
       { name: 'backend', type: 'string', valueHint: '<BACKEND>', summary: 'On Linux, defaults to x11 when the engine has it, else wayland; a --display without a colon selects wayland. On macOS, defaults to macos; on Windows, defaults to windows', environment: 'SCREEN_RELAY_BACKEND', acceptedValues: BACKENDS },
       { name: 'output', type: 'string', valueHint: '<NAME>', summary: 'Capture a Wayland output by name, a macOS display by CGDirectDisplayID, or a Windows display by device name' },
       { name: 'public', type: 'string', valueHint: '<URL>', summary: 'Advertise this HTTPS origin', environment: 'SCREEN_RELAY_PUBLIC', validate: (value) => /^https:\/\/[^/?#@\\\s]+$/.test(String(value)) },
+      { name: 'allow-origin', type: 'string', valueHint: '<ORIGINS>', summary: 'Also accept browser requests from these comma-separated exact origins: HTTPS for any host, or HTTP for localhost and 127.0.0.1', environment: 'SCREEN_RELAY_ALLOW_ORIGIN', validate: allowedOrigins },
       { name: 'tls-cert', type: 'string', valueHint: '<FILE>', summary: 'Serve TLS with this certificate', environment: 'SCREEN_RELAY_TLS_CERT' },
       { name: 'tls-key', type: 'string', valueHint: '<FILE>', summary: 'Read the TLS private key', environment: 'SCREEN_RELAY_TLS_KEY' },
       { name: 'bind', type: 'string', valueHint: '<ADDRESS>', summary: 'Listen on this address', environment: 'SCREEN_RELAY_BIND', default: '127.0.0.1', deferredDefault: true },

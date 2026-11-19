@@ -227,11 +227,13 @@ NODE
 if [ -z "$backend" ]; then
   step 'scoped grants (token session on 127.0.0.2)'
   grant_port=$((port + 1))
-  "$relay" up -d --name "$name-g" --port "$grant_port" --bind 127.0.0.2 --json > "$work/up-g.json" 2> "$work/stderr" ||
+  "$relay" up -d --name "$name-g" --port "$grant_port" --bind 127.0.0.2 --public https://Desktop.Example.test:443 --allow-origin "https://app.example.test,http://localhost:8081" --json > "$work/up-g.json" 2> "$work/stderr" ||
     fail "grant session up: $(cat "$work/stderr")"
   "$relay" status --name "$name-g" --show-token --json > "$work/status-g.json" 2> "$work/stderr" || fail 'grant session status'
   node "$(dirname "$0")/integration/grants.mjs" "$grant_port" "$(field "$work/status-g.json" session.token)" ||
     { "$relay" logs --name "$name-g" >&2 2>/dev/null; "$relay" down --name "$name-g" >/dev/null 2>&1; fail 'scoped grants'; }
+  node "$(dirname "$0")/integration/origins.mjs" "$grant_port" "$(field "$work/status-g.json" session.token)" ||
+    { "$relay" down --name "$name-g" >/dev/null 2>&1; fail 'browser origins'; }
   "$relay" down --name "$name-g" --json > "$work/down-g.json" 2> "$work/stderr" || fail 'grant session down'
 fi
 

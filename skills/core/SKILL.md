@@ -129,7 +129,7 @@ Exit codes: [CLI exit codes](references/cli.md#exit-codes).
 | --- | --- | --- |
 | `busy` | Another controller holds input, or a screenshot is already running. | See [One controller](#one-controller). Screenshots still work. |
 | `unauthorized` | Missing or wrong token. | Pass `--token-file FILE` or set `SCREEN_RELAY_TOKEN_FILE`. Or open the `#token=` viewer link. |
-| `forbidden` | The engine rejected `Host` or `Origin`. | Use the `--public` URL or loopback. |
+| `forbidden` | The engine rejected `Host` or `Origin`. | Use the `--public` URL or a loopback page whose origin matches the address it connects to. For a browser page on another origin, restart with `--allow-origin`. |
 | `unreachable` | Cannot connect: `Connection refused.`, `The host name did not resolve.` or `The TLS certificate was rejected.` | Check the address, then `screen-relay status --url <URL>`. |
 | `timeout` | No reply within `--timeout`, or `up` was not ready in time. | Raise `--timeout`. For `up`, read the component log. |
 | `not_running` | No session or logs with that name. | `screen-relay up -d`. |

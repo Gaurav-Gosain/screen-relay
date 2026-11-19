@@ -5,6 +5,8 @@
 #include "server/wire.hpp"
 #include <libwebsockets.h>
 #include <cassert>
+#include <cstdio>
+#include <fstream>
 #include <condition_variable>
 #include <mutex>
 #include <cstring>
@@ -12,6 +14,9 @@
 #include <string>
 #include <utility>
 #include <vector>
+#ifndef _WIN32
+#include <sys/stat.h>
+#endif
 
 static bool engineConfig(const std::vector<std::string>& options, relay::Config& config, std::string* error = nullptr) {
   relay::Config parsed;
@@ -43,6 +48,85 @@ int main() {
   assert(!loopbackOrigin("http://localhost:8080/path") && !loopbackOrigin("null"));
   assert(loopbackHost("localhost:8080") && loopbackHost("127.0.0.1:19110"));
   assert(!loopbackHost("localhost.evil:8080") && !loopbackHost("user@localhost") && !loopbackHost("localhost:0"));
+  assert(exactHttpsOrigin("https://app.example.com") && exactHttpsOrigin("https://app.example.com:8443"));
+  for (const char* origin : {"*", "null", "", "https://", "https://*.example.com", "http://app.example.com", "https://App.example.com",
+                             "https://app.example.com/", "https://app.example.com:443", "https://app.example.com:08443",
+                             "https://app.example.com:65536", "https://app.example.com:", "https://user@app.example.com",
+                             "https://.example.com", "https://app.example.com.", "https://[::1]", " https://app.example.com"}) {
+    assert(!exactHttpsOrigin(origin));
+  }
+  assert(exactLoopbackHttpOrigin("http://localhost:8081") && exactLoopbackHttpOrigin("http://127.0.0.1:3000"));
+  assert(exactLoopbackHttpOrigin("http://localhost") && exactLoopbackHttpOrigin("http://127.0.0.1"));
+  for (const char* origin : {"http://app.example.com", "http://app.example.com:8081", "http://LOCALHOST:8081",
+                             "http://localhost.evil:8081", "http://localhost:8081/", "http://localhost:80",
+                             "http://127.0.0.1:80", "http://localhost:08081", "http://localhost:65536",
+                             "http://localhost:", "https://localhost:8081", "http://[::1]:8081"}) {
+    assert(!exactLoopbackHttpOrigin(origin));
+  }
+  assert(exactAllowedOrigin("https://app.example.com") && exactAllowedOrigin("http://localhost:8081"));
+  assert(!exactAllowedOrigin("http://app.example.com") && !exactAllowedOrigin("*") && !exactAllowedOrigin("null"));
+  {
+    Config local;
+    assert(originAllowed(local, "http://127.0.0.1:8080") && originAllowed(local, "http://localhost:3000"));
+    assert(!originAllowed(local, "https://app.example.com") && !originAllowed(local, "null") && !originAllowed(local, "") &&
+           !originAllowed(local, "*") && !originAllowed(local, "http://localhost.evil:8080"));
+    local.allowed_origins = {"https://app.example.com"};
+    assert(originAllowed(local, "https://app.example.com") && originAllowed(local, "http://localhost:8080"));
+    assert(!originAllowed(local, "https://app.example.com:8443") && !originAllowed(local, "https://sub.app.example.com") &&
+           !originAllowed(local, "https://app.example.com.evil.test") && !originAllowed(local, "http://app.example.com") &&
+           !originAllowed(local, "https://APP.example.com") && !originAllowed(local, "null"));
+    Config remote;
+    remote.origin = "https://desk.example.com"; remote.authority = "desk.example.com";
+    assert(originAllowed(remote, "https://desk.example.com"));
+    assert(!originAllowed(remote, "http://localhost:8080") && !originAllowed(remote, "http://127.0.0.1:8080") &&
+           !originAllowed(remote, "https://desk.example.com:8443") && !originAllowed(remote, "http://desk.example.com") &&
+           !originAllowed(remote, "https://app.example.com") && !originAllowed(remote, "null") && !originAllowed(remote, ""));
+    remote.allowed_origins = {"https://app.example.com", "https://host.example.net:8443", "http://localhost:8081"};
+    assert(originAllowed(remote, "https://app.example.com") && originAllowed(remote, "https://host.example.net:8443") &&
+           originAllowed(remote, "http://localhost:8081") && originAllowed(remote, "https://desk.example.com"));
+    assert(!originAllowed(remote, "https://host.example.net") && !originAllowed(remote, "http://localhost:8080") &&
+           !originAllowed(remote, "http://localhost:8082") && !originAllowed(remote, "http://127.0.0.1:8081"));
+  }
+  {
+    Config config;
+    std::string error;
+    for (const char* value : {"", "*", "null", "https://*.example.com", "http://app.example.com", "https://app.example.com/",
+                              "https://app.example.com,", ",https://app.example.com", "https://a.example.com,,https://b.example.com",
+                              "https://a.example.com, https://b.example.com", "http://localhost:80", "http://localhost:8081/",
+                              "http://LOCALHOST:8081", "http://localhost.evil:8081"}) {
+      error.clear();
+      assert(!engineConfig({"--allow-origin", value}, config, &error) && error.rfind("Allowed origins must be", 0) == 0);
+    }
+    std::string many = "https://h0.example.com";
+    for (int index = 1; index <= 16; ++index) many += ",https://h" + std::to_string(index) + ".example.com";
+    error.clear();
+    assert(!engineConfig({"--allow-origin", many}, config, &error) && error.rfind("Allowed origins must be", 0) == 0);
+    error.clear();
+    assert(!engineConfig({"--allow-origin", "https://a.example.com,https://b.example.com:8443"}, config, &error) &&
+           error == "Allowed origins require a token");
+#ifndef _WIN32
+    const std::string tokenFile = "build/server-test-token";
+    std::remove(tokenFile.c_str());
+    { std::ofstream file(tokenFile); file << std::string(64, 'a') << '\n'; }
+    assert(!chmod(tokenFile.c_str(), 0600));
+    assert(engineConfig({"--token-file", tokenFile, "--allow-origin", "https://a.example.com,https://b.example.com:8443"}, config));
+    assert((config.allowed_origins == std::vector<std::string>{"https://a.example.com", "https://b.example.com:8443"}));
+    assert(engineConfig({"--token-file", tokenFile, "--allow-origin", "https://a.example.com,http://localhost:8081"}, config));
+    assert((config.allowed_origins == std::vector<std::string>{"https://a.example.com", "http://localhost:8081"}));
+    error.clear();
+    assert(!engineConfig({"--token-file", tokenFile, "--allow-origin", "http://app.example.com,http://localhost:8081"}, config, &error) &&
+           error.rfind("Allowed origins must be", 0) == 0);
+    for (const auto& [input, expected] : std::vector<std::pair<const char*, const char*>>{
+           {"https://DESK.Example.com:443", "desk.example.com"},
+           {"https://DESK.Example.com:08443", "desk.example.com:8443"},
+           {"https://[2001:DB8::1]:443", "[2001:db8::1]"}}) {
+      assert(engineConfig({"--token-file", tokenFile, "--public-origin", input, "--behind-tls-proxy"}, config));
+      assert(config.authority == expected);
+      assert(originAllowed(config, "https://" + config.authority));
+    }
+    std::remove(tokenFile.c_str());
+#endif
+  }
   uint8_t event[16] = {6, 0, 0, 1, 0xff, 0xff, 0xff, 0x88};
   event[13] = 16; event[15] = 128;
   const auto input = inputEvent(event);

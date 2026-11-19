@@ -79,7 +79,7 @@ export function resolveTarget(args: Args): Target {
 const RECOVERY: Partial<Record<string, string>> = {
   busy: 'Close the other viewer or client, then retry.',
   unauthorized: 'Pass the token with --token-file FILE or set SCREEN_RELAY_TOKEN_FILE.',
-  forbidden: 'Use the --public origin, or connect through loopback.',
+  forbidden: 'Use the --public origin, or a loopback page whose origin matches the address it connects to. A browser page on another origin needs --allow-origin on `screen-relay up`.',
   unsupported_input: 'Use screen-relay type for layout-neutral text.',
   disconnected: 'Retry the command.',
   clipboard_unavailable: 'Run screen-relay status --json and check capabilities.clipboard.',
