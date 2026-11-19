@@ -7,9 +7,11 @@
 #include "screenshot.hpp"
 #include "wire.hpp"
 #include <libwebsockets.h>
+#include <array>
 #include <atomic>
 #include <deque>
 #include <functional>
+#include <set>
 #include <memory>
 #include <mutex>
 #include <optional>
@@ -23,10 +25,10 @@ struct HttpResponse {
   size_t length, input_length, input_expected;
   std::vector<uint8_t>* image;
   size_t offset;
-  bool image_headers, screenshot_error, control, view_only, input_reply, input_headers, closing;
+  Socket socket;
+  bool image_headers, screenshot_error, input_reply, input_headers, closing;
   unsigned reply_status;
 };
-/** One viewer session at a time; the capture thread and the lws service thread share it through mutex. */
 struct Server {
   struct InputReply {
     lws* wsi = nullptr;
@@ -46,45 +48,68 @@ struct Server {
     std::mutex mutex;
     lws_context* context = nullptr;
   };
+  struct Stream {
+    lws* viewer = nullptr;
+    std::mutex mutex;
+    std::deque<EncodedFrame> pending;
+    std::optional<CursorImage> pending_cursor;
+    bool last_write_cursor = false;
+    size_t buffered_stream_bytes = 0;
+    uint32_t stream_notsent_lowat = 0;
+    uint64_t flow_timer_due_us = 0;
+    FlowControl flow;
+    uint32_t generation = 0, lastSequence = 0;
+    uint16_t width = 0, height = 0;
+    bool failed = false;
+    std::vector<uint8_t> received;
+    CaptureEncoder capture;
+    explicit Stream(Server& server);
+    void begin(lws* wsi, uint32_t gen);
+    void end();
+    void updateFlow(bool proxy);
+    bool timedOut();
+    std::string metrics();
+    int write(bool proxy);
+  };
   Config config;
   Tickets tickets;
   lws_context* context = nullptr;
-  lws* viewer = nullptr;
+  std::array<std::unique_ptr<Stream>, max_viewers> streams;
+  lws* input_viewer = nullptr;
+  lws* control = nullptr;
+  /// Sockets that connectionPlan closed; each closes with its close code on its next timer callback.
+  std::set<lws*> closing;
   Screenshot screenshot;
   lws* screenshot_client = nullptr;
-  bool controller = false, viewOnly = false, control_ready = false;
+  bool control_ready = false;
+  uint32_t control_generation = 0;
+  std::vector<uint8_t> control_received;
   std::deque<std::shared_ptr<ControlReply>> replies;
   std::mutex reply_mutex;
   std::deque<std::shared_ptr<InputReply>> input_replies;
-  std::mutex mutex;
   std::shared_ptr<InputWake> wake = std::make_shared<InputWake>();
   std::unique_ptr<InputController> input;
-  std::deque<EncodedFrame> pending;
-  std::optional<CursorImage> pending_cursor;
-  bool last_write_cursor = false;
-  size_t buffered_stream_bytes = 0;
-  uint32_t stream_notsent_lowat = 0;
-  uint64_t flow_timer_due_us = 0;
-  FlowControl flow;
-  CaptureEncoder capture;
-  uint32_t generation = 0, lastSequence = 0, nextGeneration = 0;
+  uint32_t nextGeneration = 0;
   uint16_t width = 0, height = 0;
-  bool failed = false;
-  std::vector<uint8_t> received;
   explicit Server(Config settings);
+  Stream* streamFor(lws* wsi);
+  ConnectionPlan planConnection(Socket socket);
+  int startStream(lws* wsi, Socket socket, const ConnectionPlan& plan);
   void release();
+  void endStream(lws* wsi);
+  void endControl();
   void end();
-  bool holdsInput() const { return viewer && !viewOnly; }
-  bool message();
-  void updateFlow();
-  bool timedOut();
+  /// Sends a close code from the timer callback; the default is the takeover code.
+  void evict(lws* wsi, uint16_t code = close_taken, const char* reason = "taken");
+  bool holdsInput() const { return control || input_viewer; }
+  bool streamMessage(Stream& stream);
+  bool controlMessage();
   std::string metrics();
   /// Holds the HTTP response until the backend applied or dropped the batch; posted counts records that reached it.
   int deferInput(lws* wsi, InputStatus status, size_t applied, size_t posted);
   std::vector<std::shared_ptr<InputReply>> readyInputs();
   void forgetInput(lws* wsi);
   int writeControl(lws* wsi);
-  int write(lws* wsi);
 };
 int callback(lws* wsi, lws_callback_reasons reason, void* user, void* in, size_t len);
 }  // namespace relay

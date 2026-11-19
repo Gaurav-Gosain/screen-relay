@@ -78,7 +78,7 @@ On the VM, start a terminal on the default X11 desktop:
 screen-relay run -- xfce4-terminal
 ```
 
-The command prints the process ID. Wait for the terminal to appear in the viewer. The viewer watches without owning input, so the commands below work while it is open. Choose **Take control** in the viewer to drive the desktop from the browser, and **Release control** to hand input back to the CLI.
+The command prints the process ID. Wait for the terminal to appear in the viewer. If the viewer has control, choose **Release control** before running the input commands below. The viewer stays open so you can watch the result.
 
 ```sh
 screen-relay screenshot screen.png

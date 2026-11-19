@@ -37,14 +37,26 @@ The server processes records in order and stops at the first record rejected dur
 | --- | --- |
 | `/stream` | Receives video and, when supported, cursor messages. Sends ACKs and input. |
 | `/stream?view=1` | Receives the same messages, but does not own input. |
+| `/stream?take=1` | Works like `/stream`, and takes input from the current owner. |
 | `/control` | Receives a control-ready message, then sends input and receives one response per request. Up to 32 replies can be queued. |
-| Both | Use the `nsl1` subprotocol and binary messages. One WebSocket message contains one protocol message. Only one `/stream` or `/control` connection is allowed. A `/stream` connection without `?view=1`, or a `/control` connection, owns input and blocks `POST /input`. |
+| All | Use the `nsl1` subprotocol and binary messages. One WebSocket message contains one protocol message. A `/stream` connection without `?view=1`, or a `/control` connection, owns input and blocks `POST /input`. |
 
-A `/stream?view=1` connection watches without owning input, so `POST /input` and the CLI keep working while it is connected. The server ignores input messages sent on it. To take input, close the connection and open `/stream` without the parameter.
+A `/stream?view=1` connection watches without owning input, so `POST /input` and the CLI keep working while it is connected. The server ignores input messages sent on it. To take input, close the connection and open `/stream?take=1`.
+
+The engine admits up to four `/stream` connections, with one input owner at a time.
+
+| Connection | Result |
+| --- | --- |
+| `/stream?view=1` | Opens if a viewer slot is available. No change to input ownership. |
+| `/stream` | Opens and owns input if a viewer slot is available and input has no owner. |
+| `/stream?take=1` | Opens and owns input if a viewer slot is available or the current owner is a viewer it can replace. The previous input owner closes with code 4001 and reason `taken`. |
+| `/control` | Opens and owns input if input has no owner. Otherwise it opens and closes with code 4003 and reason `busy`. |
+
+A refused `/stream` connection fails its WebSocket handshake, while a refused `/control` connection opens and closes with code 4003 and reason `busy` so a client can tell it apart from an unreachable engine. Held keys and buttons are released when a connection loses input. A browser that loses input to a takeover reconnects with `?view=1`.
 
 When the session has a token, offer both `nsl1` and `bearer.TOKEN` as subprotocols; the server selects `nsl1`. Do not put the token in a request URL.
 
-To let a viewer connect without giving it the token, send `POST /tickets` with the token as `Authorization: Bearer TOKEN`. The response is `{"ticket":"…","expires_in":60}`. The viewer offers `nsl1` and `ticket.TICKET` instead of `bearer.TOKEN`. A ticket opens one WebSocket, within 60 seconds; a connection the server refuses for another reason, such as an existing viewer, doesn't use it. A ticket doesn't authorize HTTP requests. The bundled viewer doesn't use tickets yet, so only custom clients can offer `ticket.TICKET`. Up to 16 unused tickets are kept, and requesting another drops the oldest.
+To let a viewer connect without giving it the token, send `POST /tickets` with the token as `Authorization: Bearer TOKEN`. The response is `{"ticket":"…","expires_in":60}`. The viewer offers `nsl1` and `ticket.TICKET` instead of `bearer.TOKEN`. A ticket opens one WebSocket, within 60 seconds; a connection the server refuses for another reason, such as `/control` while a viewer owns input, doesn't use it. A ticket doesn't authorize HTTP requests. The bundled viewer doesn't use tickets yet, so only custom clients can offer `ticket.TICKET`. Up to 16 unused tickets are kept, and requesting another drops the oldest.
 
 | Header offset | Size | Field |
 | ---: | ---: | --- |

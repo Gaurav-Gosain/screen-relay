@@ -48,8 +48,8 @@ Replace the URL and securely copy the session token into `./token`. For a local 
 | `GET` | <span id="get-metrics" />`/metrics` | Returns stream and resource metrics as JSON. |
 | `POST` | <span id="post-tickets" />`/tickets` | Returns a one-time viewer ticket that opens one WebSocket within 60 seconds. |
 | `GET` | `/`, `/index.html`, `/viewer.js` | Serves the viewer. |
-| WebSocket | `/stream` | Streams video, sends cursor images when supported, and accepts viewer input. Add `?view=1` to watch without owning input. |
-| WebSocket | `/control` | Sends input and receives a response for each event, without video. |
+| WebSocket | `/stream` | Streams video and cursor images when supported. With no query parameter, it claims idle input. Use `?view=1` to watch without input or `?take=1` to take input from the current owner, which closes with code 4001. |
+| WebSocket | `/control` | Sends input and receives a response for each event, without video. It can run next to a view-only `/stream`, and closes with code 4001 when a viewer takes control or code 4003 when it connects while input is owned. |
 
 The viewer HTML is served with `Content-Security-Policy: frame-ancestors 'none'` and `X-Frame-Options: DENY`, so another site cannot embed it and forward clicks to the desktop.
 

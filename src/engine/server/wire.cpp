@@ -31,10 +31,25 @@ unsigned inputLength(const std::string& text, uint64_t& length) {
   if (!unsignedNumber(text, length) || !length || length % 16) return HTTP_STATUS_BAD_REQUEST;
   return length > max_input_batch * 16 ? HTTP_STATUS_REQ_ENTITY_TOO_LARGE : 0;
 }
-bool viewerTarget(const std::string& target, bool& control, bool& viewOnly) {
-  control = target == "/control";
-  viewOnly = target == "/stream?view=1";
-  return control || viewOnly || target == "/stream";
+Socket viewerTarget(const std::string& target) {
+  if (target == "/stream?view=1") return Socket::watch;
+  if (target == "/stream") return Socket::stream;
+  if (target == "/stream?take=1") return Socket::take;
+  if (target == "/control") return Socket::control;
+  return Socket::none;
+}
+ConnectionPlan connectionPlan(Socket socket, size_t viewerCount, bool streamOwnsInput, bool controlOpen) {
+  const bool capacity = viewerCount < max_viewers;
+  const bool idle = !streamOwnsInput && !controlOpen;
+  switch (socket) {
+    case Socket::none: return {};
+    case Socket::control: return {idle, false, false};
+    case Socket::watch: return {capacity, false, false};
+    case Socket::stream: return {capacity && idle, false, false};
+    case Socket::take:
+      return capacity || streamOwnsInput ? ConnectionPlan{true, streamOwnsInput, controlOpen} : ConnectionPlan{};
+  }
+  return {};
 }
 bool frameMessage(std::vector<uint8_t>& out, size_t pre, uint32_t generation, uint32_t lastSequence, const EncodedFrame& f,
                   uint16_t width, uint16_t height) {

@@ -290,3 +290,41 @@ test('remote credentials require HTTPS and are not forwarded through redirects',
     await Promise.all([new Promise(resolve => server.close(resolve)), new Promise(resolve => target.close(resolve))]);
   }
 });
+
+test('a refused control connection reports busy', async () => {
+  const original = globalThis.WebSocket;
+  class RefusedSocket extends EventTarget {
+    static CLOSING = 2;
+    constructor() { super(); this.readyState = 1; queueMicrotask(() => { this.readyState = 3; this.dispatchEvent(Object.assign(new Event('close'), { code: 4003 })); }); }
+    close() { this.readyState = 3; }
+    send() {}
+  }
+  globalThis.WebSocket = RefusedSocket;
+  try {
+    await assert.rejects(connect(), { code: 'BUSY', reason: 'busy' });
+  } finally { globalThis.WebSocket = original; }
+});
+
+test('takeover ends session input and screenshots but leaves HTTP status and capabilities available', async () => {
+  const server = createServer((request, response) => {
+    response.writeHead(['/capabilities', '/metrics'].includes(request.url) ? 200 : 404, { 'content-type': 'application/json' });
+    response.end(JSON.stringify({ path: request.url }));
+  });
+  server.listen(0, '127.0.0.1');
+  await once(server, 'listening');
+  const original = globalThis.WebSocket; globalThis.WebSocket = FakeSocket;
+  try {
+    const session = await connect({ url: `http://127.0.0.1:${server.address().port}` });
+    const pending = session.input({ type: 'releaseAll' });
+    FakeSocket.current.readyState = 3;
+    FakeSocket.current.dispatchEvent(Object.assign(new Event('close'), { code: 4001 }));
+    await assert.rejects(pending, { reason: 'control_taken' });
+    await assert.rejects(session.input({ type: 'releaseAll' }), { reason: 'control_taken' });
+    await assert.rejects(session.screenshot(), { reason: 'control_taken' });
+    assert.deepEqual(await session.capabilities(), { path: '/capabilities' });
+    assert.deepEqual(await session.status(), { path: '/metrics' });
+  } finally {
+    globalThis.WebSocket = original;
+    await new Promise(resolve => server.close(resolve));
+  }
+});

@@ -1,5 +1,5 @@
 import {
-  HID_KEYS, MAX_BYTES_IN_FLIGHT, encodeAck, encodeInput, h264Codec, isLoopback, parseMessage, socketTarget, validToken,
+  CLOSE_TAKEN, HID_KEYS, MAX_BYTES_IN_FLIGHT, encodeAck, encodeInput, h264Codec, isLoopback, parseMessage, socketTarget, validToken,
   type InputEvent, type Message,
 } from '../src/protocol/index.js';
 
@@ -42,7 +42,7 @@ const stats = ((window as any).nativeStats = {
   received: 0, drawn: 0, superseded: 0, holdMs: 0, bytes: 0, decodeerrors: 0, outstanding: 0, pendingBytes: 0, pendingHighWater: 0,
 });
 let socket: WebSocket, decoder: VideoDecoder, retryTimer: any, deadline: any, frameHandle = 0, drawnThisFrame = false, transportBroken = false;
-let generation = 0, sequence = 0, lastTimestamp = -1, ready = false, retry = 0, epoch = 0;
+let generation = 0, sequence = 0, lastTimestamp = -1, ready = false, retry = 0, epoch = 0, takeRequested = false;
 let backlogSince: number | null = null, lastCatchUp = -Infinity;
 /** How far back the smallest arrival-minus-capture offset is searched, in ms. */
 const CLOCK_WINDOW_MS = 5000;
@@ -58,7 +58,7 @@ const HOLD_DECAY = 0.05;
 const CLOCK_JUMP_MS = 500;
 type Sample = { time: number; offset: number; late: number };
 let samples: Sample[] = [], lows: Sample[] = [], holdMs = 0;
-let buttons = 0, modifiers = 0, x = 0, y = 0, viewOnly = true, capsLock = false,
+let buttons = 0, modifiers = 0, x = 0, y = 0, viewOnly = false, capsLock = false,
   metaAsCtrl = stored('relay.metaCtrl') === null ? macos() : stored('relay.metaCtrl') === '1';
 const pending = new Map(), decoded: any[] = [], held = new Set<number>(), latched = new Map<number, Element>();
 const clamp = (value: number, low: number, high: number) => Math.max(low, Math.min(high, value));
@@ -302,13 +302,17 @@ function connect() {
     setStatus('WebCodecs unavailable in this browser');
     return;
   }
-  const target = socketTarget(new URL(`${location.protocol}//${location.host}`), viewOnly ? '/stream?view=1' : '/stream', accessToken);
+  const path = viewOnly ? '/stream?view=1' : takeRequested ? '/stream?take=1' : '/stream';
+  takeRequested = false;
+  const target = socketTarget(new URL(`${location.protocol}//${location.host}`), path, accessToken);
   socket = new WebSocket(target.url, target.protocols);
   transportBroken = false;
   loadCapabilities();
   const ws = socket;
   ws.binaryType = 'arraybuffer';
+  let opened = false;
   ws.onopen = () => {
+    opened = true;
     if (current === epoch) {
       setStatus('Waiting for frame…');
       deadline = setTimeout(() => {
@@ -390,11 +394,18 @@ function connect() {
     }
   };
   ws.onerror = () => {
-    if (current === epoch) { transportBroken = true; setStatus('Connection error'); }
+    if (current !== epoch || !(opened || ready)) return;
+    transportBroken = true;
+    setStatus('Connection error');
   };
-  ws.onclose = () => {
+  ws.onclose = (e: CloseEvent) => {
     if (current !== epoch) return;
     reset();
+    if (e.code === CLOSE_TAKEN) retry = 0;
+    if ((!opened || e.code === CLOSE_TAKEN) && !viewOnly) {
+      viewOnly = true;
+      applyControl();
+    }
     if (document.hidden) {
       setStatus('Paused while hidden');
       return;
@@ -404,6 +415,7 @@ function connect() {
       return;
     }
     const delay = Math.min(1000 * 2 ** retry++, 8000);
+    if (e.code === CLOSE_TAKEN) setStatus('Control changed · reconnecting view-only');
     setStatus(status.textContent + ` · retrying in ${delay / 1000}s`);
     retryTimer = setTimeout(connect, delay);
     checkAccess(current);
@@ -685,6 +697,7 @@ function setViewOnly(next: boolean) {
   if (viewOnly === next) return;
   release();
   viewOnly = next;
+  takeRequested = !next;
   applyControl();
   connect();
 }
@@ -766,7 +779,11 @@ panels.keys.addEventListener('click', (e) => {
 panels.connection.addEventListener('submit', (e) => {
   e.preventDefault();
   const value = (document.querySelector('#access-token') as HTMLInputElement).value.trim();
-  if (value && (!validToken(value) || !trustedPage)) {
+  if (!value || (validToken(value) && trustedPage)) {
+    viewOnly = false;
+    takeRequested = false;
+    applyControl();
+  } else {
     setStatus('Use a 64-character token over HTTPS or a localhost tunnel');
     return;
   }

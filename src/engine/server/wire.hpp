@@ -15,8 +15,19 @@ void put(uint8_t* p, uint64_t value, unsigned count);
 InputEvent inputEvent(const uint8_t* p);
 /** Validates an /input Content-Length header and returns 0 or the HTTP error status. */
 unsigned inputLength(const std::string& text, uint64_t& length);
-/** Classifies a /stream, /stream?view=1, or /control request target and reports false for any other target. */
-bool viewerTarget(const std::string& target, bool& control, bool& viewOnly);
+/** The WebSocket a request target opens. */
+enum class Socket : uint8_t { none, watch, stream, take, control };
+/** Classifies /stream?view=1, /stream, /stream?take=1, and /control; any other target is Socket::none. */
+Socket viewerTarget(const std::string& target);
+/** What opening a socket does to the sockets already open. */
+struct ConnectionPlan {
+  bool open = false, closeStream = false, closeControl = false;
+};
+constexpr size_t max_viewers = 4;
+constexpr uint16_t close_taken = 4001;
+constexpr uint16_t close_busy = 4003;
+/// Plans a connection without changing the current input owner or any active stream.
+ConnectionPlan connectionPlan(Socket socket, size_t viewerCount, bool streamOwnsInput, bool controlOpen);
 /**
  * The builders below fill out with pre zero bytes of caller padding followed by one NSL1 message.
  * frameMessage and cursorMessage return false when the payload must not be sent.

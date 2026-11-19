@@ -68,12 +68,37 @@ int main() {
     const unsigned char zero[44] = {};
     assert(std::memcmp(first + 256, zero, sizeof(zero)) != 0);
   }
-  bool control = false, viewOnly = false;
-  assert(viewerTarget("/stream", control, viewOnly) && !control && !viewOnly);
-  assert(viewerTarget("/stream?view=1", control, viewOnly) && !control && viewOnly);
-  assert(viewerTarget("/control", control, viewOnly) && control && !viewOnly);
-  for (const char* target : {"/", "/stream?view=0", "/stream?view=1&x=2", "/control?view=1", "/stream?control=1"}) {
-    assert(!viewerTarget(target, control, viewOnly));
+  assert(viewerTarget("/stream?view=1") == Socket::watch && viewerTarget("/stream") == Socket::stream);
+  assert(viewerTarget("/stream?take=1") == Socket::take && viewerTarget("/control") == Socket::control);
+  for (const char* target : {"/", "/stream?view=0", "/stream?view=1&x=2", "/control?view=1", "/stream?control=1",
+                             "/stream?take=0", "/control?take=1", "/stream?view=1&take=1"}) {
+    assert(viewerTarget(target) == Socket::none);
+  }
+  {
+    struct Row { Socket socket; size_t viewerCount; bool owns, control, open, closeStream, closeControl; };
+    const Row rows[] = {
+      {Socket::watch, 0, false, false, true, false, false},
+      {Socket::watch, 1, true, false, true, false, false},
+      {Socket::watch, 1, false, true, true, false, false},
+      {Socket::watch, max_viewers, true, false, false, false, false},
+      {Socket::stream, 0, false, false, true, false, false},
+      {Socket::stream, 1, false, false, true, false, false},
+      {Socket::stream, 1, true, false, false, false, false},
+      {Socket::stream, 0, false, true, false, false, false},
+      {Socket::stream, max_viewers, false, false, false, false, false},
+      {Socket::control, max_viewers, false, false, true, false, false},
+      {Socket::control, 1, true, false, false, false, false},
+      {Socket::control, 0, false, true, false, false, false},
+      {Socket::take, 1, true, false, true, true, false},
+      {Socket::take, 1, false, true, true, false, true},
+      {Socket::take, max_viewers, true, false, true, true, false},
+      {Socket::take, max_viewers, false, true, false, false, false},
+      {Socket::none, 0, false, false, false, false, false},
+    };
+    for (const auto& row : rows) {
+      const auto plan = connectionPlan(row.socket, row.viewerCount, row.owns, row.control);
+      assert(plan.open == row.open && plan.closeStream == row.closeStream && plan.closeControl == row.closeControl);
+    }
   }
   std::vector<uint8_t> out;
   controlReady(out, 2, 7, 1280, 720);

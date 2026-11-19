@@ -38,6 +38,8 @@ agent or CLI/SDK input over /input (HTTP) or /control (WebSocket)
 
 Only one of the viewer, `/control`, and `/input` owns input at a time.
 
+`connectionPlan` in `src/engine/server/wire.cpp` is the connection state machine: it decides whether a new `/stream` or `/control` socket opens and which open socket it closes, and `server-test` checks every row of its table.
+
 ## Interfaces
 
 - `CaptureSource` (`src/engine/core/capture-source.hpp`): `fd()`, `dimensions()`, `drainDamage()`, `pixelFormat()`, `capture()`. A frame is a non-owning CPU view (BGRA or ARGB), valid until the next capture. Optional `cursorSupported()` and `cursor(force)`.

@@ -19,6 +19,7 @@ export const ERROR_REASONS = {
   already_running: { class: 'conflict', code: 'BUSY', exitCode: 1 },
   port_in_use: { class: 'conflict', code: 'BUSY', exitCode: 1 },
   busy: { class: 'conflict', code: 'BUSY', exitCode: 1 },
+  control_taken: { class: 'conflict', code: 'BUSY', exitCode: 1 },
   unreachable: { class: 'network', code: 'NETWORK_ERROR', exitCode: 1 },
   timeout: { class: 'network', code: 'TIMEOUT', exitCode: 1 },
   disconnected: { class: 'network', code: 'DISCONNECTED', exitCode: 1 },

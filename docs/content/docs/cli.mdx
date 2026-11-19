@@ -253,7 +253,9 @@ Coordinates are fractions from `0` to `1`, measured from the top-left.
 
 - Success means the engine applied the events, not that the app reacted. Take a screenshot to check.
 - Only one input owner can send input: a viewer that took control, an SDK control session, or the CLI.
-- The viewer opens view-only, so it can watch while the CLI sends input. Choose **Take control** in the viewer to own input, and **Release control** to hand it back.
+- A viewer opens with control when input is idle. If another viewer or an SDK control session owns input, the new viewer opens view-only. Choose **Release control** before sending input from the CLI.
+- Choose **Take control** to take input from another viewer or end an SDK control session. The previous viewer reconnects view-only. An automatic reconnect never takes input from another owner.
+- Up to four viewers can watch the desktop at the same time. Opening another viewer does not disconnect the current one.
 - Batches hold up to 256 events. A key combination is never split across batches.
 - Keys and buttons are released after each batch.
 - `busy` means another owner holds input, a batch exceeds the 1024-event queue, or the session ends during input.
@@ -400,6 +402,7 @@ Each `next` entry has `command` and `argv`. `data` can contain `component`, `log
 | `forbidden` | Host or Origin rejected. Use public origin or loopback. |
 | `unsupported_input` | Backend cannot produce the input. Change input or keyboard layout. |
 | `busy` | Input is owned, the queue is full, or a screenshot is in progress. Release control or retry. |
+| `control_taken` | A viewer took control and ended the SDK control session. Connect again after the viewer releases control. |
 | `unreachable` | Connection, DNS, or TLS failed. Check URL and certificate. |
 | `timeout` | Startup or request timed out. Check logs or raise `--timeout`. |
 | `not_running` | Missing session or logs, or stopped session. Start it or select another. |

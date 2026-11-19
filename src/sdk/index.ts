@@ -4,7 +4,7 @@ import { request as httpsRequest, type RequestOptions } from 'node:https';
 import { plan, type Plan } from './transport.js';
 import {
   RelayError, networkError, responseError, baseUrl, integer, encodeInput, encodeInputBatch, comboEvents, textEvents,
-  batches, parseMessage, socketTarget, MAX_INPUT_BATCH, MAX_INPUT_PENDING,
+  batches, parseMessage, socketTarget, CLOSE_TAKEN, CLOSE_BUSY, MAX_INPUT_BATCH, MAX_INPUT_PENDING,
   type InputEvent,
 } from '../protocol/index.js';
 
@@ -36,7 +36,7 @@ export interface Client {
   type(text: string): Promise<InputResult>;
   input(events: InputEvent[]): Promise<InputResult>;
 }
-/** A control connection that owns input until `close()`. `input` sends one raw event. */
+/** A control connection that owns input until `close()`, or until a viewer takes control, which rejects with `control_taken`. `input` sends one raw event. */
 export interface Session {
   surface: { width: number; height: number };
   capabilities(): Promise<Capabilities>;
@@ -273,7 +273,7 @@ export async function connect(options: ClientOptions = {}): Promise<Session> {
   const { url, protocols } = socketTarget(server.base, '/control', server.token);
   const socket = new WebSocket(url, protocols);
   socket.binaryType = 'arraybuffer';
-  let generation = 0, sequence = 0, closed = false, ready = false;
+  let generation = 0, sequence = 0, closed = false, ready = false, ended: RelayError | undefined;
   const pending = new Map<number, { resolve: () => void; reject: (error: RelayError) => void; timer: ReturnType<typeof setTimeout> }>();
   let resolveReady!: (surface: Session['surface']) => void;
   let rejectReady!: (error: RelayError) => void;
@@ -281,6 +281,7 @@ export async function connect(options: ClientOptions = {}): Promise<Session> {
   const finish = (error: RelayError) => {
     if (closed) return;
     closed = true;
+    ended = error;
     server.signal?.removeEventListener('abort', cancel);
     if (!ready) rejectReady(error);
     for (const item of pending.values()) { clearTimeout(item.timer); item.reject(error); }
@@ -290,7 +291,11 @@ export async function connect(options: ClientOptions = {}): Promise<Session> {
   const cancel = () => finish(new RelayError('canceled', 'Control connection canceled.'));
   server.signal?.addEventListener('abort', cancel, { once: true });
   socket.addEventListener('error', () => finish(new RelayError('unreachable', 'The connection failed.')));
-  socket.addEventListener('close', () => finish(new RelayError('disconnected', 'Control connection closed')));
+  socket.addEventListener('close', ({ code }) => finish(code === CLOSE_TAKEN
+    ? new RelayError('control_taken', 'A viewer took control of the desktop.', { hint: 'Wait for the viewer to release control, then connect again.' })
+    : code === CLOSE_BUSY
+      ? new RelayError('busy', 'Another controller holds control of the desktop.', { hint: 'Wait for it to release control, then connect again.' })
+      : new RelayError('disconnected', 'Control connection closed')));
   socket.addEventListener('message', ({ data }) => {
     try {
       if (!(data instanceof ArrayBuffer)) throw new Error('Non-binary message');
@@ -318,11 +323,11 @@ export async function connect(options: ClientOptions = {}): Promise<Session> {
     capabilities: () => request(server, '/capabilities'),
     status: () => request(server, '/metrics'),
     async screenshot(path) {
-      if (closed) throw new RelayError('disconnected', 'Control connection closed');
+      if (closed) throw ended!;
       return screenshot({ ...options, url: server.base.href, timeout: server.timeout, token: server.token }, path);
     },
     input(event) {
-      if (closed) return Promise.reject(new RelayError('disconnected', 'Control connection closed'));
+      if (closed) return Promise.reject(ended!);
       if (pending.size >= MAX_INPUT_PENDING) return Promise.reject(new RelayError('busy', 'Too many pending input requests'));
       if (sequence === 0xffffffff) return Promise.reject(new RelayError('protocol_error', 'Input sequence exhausted; reconnect'));
       let message: Uint8Array;

@@ -253,21 +253,29 @@ test('drawing updates status only when its text changes', () => {
   app.sockets[0].onerror();
   assert.equal(status.textContent, 'Connection error');
   app.frame(3); app.tick(32);
-  assert.equal(status.textContent, 'Live · view only');
+  assert.equal(status.textContent, 'Live · you have control');
   assert.equal(status.textWrites, liveWrites + 2);
 });
 
-test('the viewer connects view-only and takes control from the toolbar', () => {
+test('the first viewer claims idle input; a refused viewer watches and can choose Take control', () => {
+  const first = viewer();
+  assert.equal(first.sockets[0].url, 'ws://localhost/stream');
+  first.sockets[0].onopen();
+  first.frame(1);
+  assert.equal(first.document.querySelector('#status').textContent, 'Live · you have control');
+
   const app = viewer();
   const control = () => app.document.querySelector('#toolbar-actions').querySelector('[data-action="control"]');
+  app.sockets[0].onclose({ code: 1006 });
+  runInContext('relayViewer.connect()', app.context);
   app.frame(1);
-  assert.equal(app.sockets[0].url, 'ws://localhost/stream?view=1');
+  assert.equal(app.sockets.at(-1).url, 'ws://localhost/stream?view=1');
   assert.equal(control().attributes['aria-pressed'], 'false');
   assert.equal(control().attributes['title'], 'Take control');
   key(app, 'keydown', 'KeyA');
-  assert.deepEqual(app.sockets[0].inputs, []);
+  assert.deepEqual(app.sockets.at(-1).inputs, []);
   runInContext('relayViewer.setViewOnly(false)', app.context);
-  assert.equal(app.sockets.at(-1).url, 'ws://localhost/stream');
+  assert.equal(app.sockets.at(-1).url, 'ws://localhost/stream?take=1');
   app.frame(1);
   assert.equal(app.document.querySelector('#status').textContent, 'Live · you have control');
   assert.equal(control().attributes['aria-pressed'], 'true');
@@ -667,4 +675,54 @@ test('under a hold, frames wait for their due time and a trimmed frame is acknow
   for (const wait of waits) assert.ok(Math.abs(wait - (hold + 1) * 1000) < 1);
   const all = traced(app, 'ack');
   assert.deepEqual(all, Array.from({ length: all.length }, (_, index) => index + 1));
+});
+
+test('a refused handshake does not flash a connection error', () => {
+  const app = viewer();
+  const status = app.document.querySelector('#status');
+  assert.equal(new URL(app.sockets[0].url).pathname, '/stream');
+  app.sockets[0].onerror();
+  assert.notEqual(status.textContent, 'Connection error');
+  app.sockets[0].onclose({ code: 1006 });
+  assert.equal(status.textContent, 'Connecting… · retrying in 1s');
+  runInContext('relayViewer.connect()', app.context);
+  assert.equal(app.sockets.at(-1).url, 'ws://localhost/stream?view=1');
+});
+
+test('a token submitted in the connection form starts a fresh control-capable connection', () => {
+  const app = viewer();
+  app.sockets[0].onclose({ code: 1006 });
+  const token = app.document.querySelector('#access-token');
+  token.value = 'a'.repeat(64);
+  app.document.querySelector('#connection-panel').handlers.submit({ preventDefault() {} });
+  const target = new URL(app.sockets.at(-1).url);
+  assert.equal(target.pathname, '/stream');
+  assert.equal(target.searchParams.has('view'), false);
+  assert.equal(target.searchParams.has('take'), false);
+  assert.equal(app.document.querySelector('#toolbar-actions').querySelector('[data-action="control"]').attributes['aria-label'], 'Release control');
+});
+
+test('an automatic reconnect claims idle input without taking it from another owner', () => {
+  const app = viewer();
+  assert.equal(app.sockets.at(-1).url, 'ws://localhost/stream');
+  app.sockets.at(-1).onopen();
+  app.frame(1);
+  app.sockets.at(-1).onclose({ code: 1006 });
+  runInContext('relayViewer.connect()', app.context);
+  assert.equal(app.sockets.at(-1).url, 'ws://localhost/stream');
+  app.sockets.at(-1).onclose({ code: 1006 });
+  runInContext('relayViewer.connect()', app.context);
+  assert.equal(app.sockets.at(-1).url, 'ws://localhost/stream?view=1');
+});
+
+
+test('a viewer that loses input to a takeover reconnects view-only', () => {
+  const app = viewer();
+  app.sockets[0].onopen();
+  app.frame(1);
+  app.sockets[0].onclose({ code: 4001 });
+  runInContext('relayViewer.connect()', app.context);
+  app.frame(1);
+  assert.equal(app.sockets.at(-1).url, 'ws://localhost/stream?view=1');
+  assert.equal(app.document.querySelector('#status').textContent, 'Live · view only');
 });
