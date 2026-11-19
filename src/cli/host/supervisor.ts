@@ -1,13 +1,13 @@
 import { spawnSync, type ChildProcess, type SpawnOptions } from 'node:child_process';
 import { randomBytes } from 'node:crypto';
-import { accessSync, closeSync, constants, existsSync, fchmodSync, mkdirSync, mkdtempSync, openSync, readdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { accessSync, closeSync, constants, existsSync, fchmodSync, lstatSync, mkdirSync, mkdtempSync, openSync, readdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { dirname, join, resolve } from 'node:path';
 import type { Readable } from 'node:stream';
 import { createClient } from '../../sdk/index.js';
 import { BACKENDS, backendValue } from '../config.js';
 import { Failure, nextFor, sessionCommand } from '../output.js';
 import { engineDirectory, HostArgs, isLinux, LAUNCHER_DIR, run, spawnCleared, which } from './common.js';
-import { identity, SessionData, sweep, tail, writeSession } from './state.js';
+import { cleanupWaylandRuntime, identity, SessionData, sweep, tail, writeSession } from './state.js';
 import { engineEnvironment, engineWorkingDirectory } from './windows.js';
 
 export const BACKEND_PROGRAMS = {
@@ -231,12 +231,14 @@ export class Session {
     }
     this.env.LANG ??= 'C.UTF-8';
     this.runtimeDir = mkdtempSync('/tmp/relay-');
+    const runtimeStat = lstatSync(this.runtimeDir, { bigint: true });
+    this.save({ backend: 'wayland', runtimeDir: this.runtimeDir,
+      runtimeIdentity: { dev: String(runtimeStat.dev), ino: String(runtimeStat.ino), uid: String(runtimeStat.uid) } });
     this.env.XDG_RUNTIME_DIR = this.runtimeDir;
     delete this.env.DISPLAY;
     delete this.env.WAYLAND_DISPLAY;
     delete this.env.SWAYSOCK;
     delete this.env.XAUTHORITY;
-    this.save({ backend: 'wayland', runtimeDir: this.runtimeDir });
     const config = join(this.dir, 'sway.conf');
     const displayFile = join(this.dir, 'wayland-display');
     writeFileSync(config, `output * mode --custom ${this.args.resolution}@${this.args.fps}Hz\nxwayland force\n`);
@@ -453,7 +455,13 @@ export class Session {
       }
     }
     await sweep(this.dir);
-    if (this.runtimeDir) rmSync(this.runtimeDir, { recursive: true, force: true });
+    if (this.runtimeDir) {
+      cleanupWaylandRuntime(this.data);
+      delete this.env.XDG_RUNTIME_DIR;
+      delete this.env.WAYLAND_DISPLAY;
+      delete this.env.SWAYSOCK;
+      if (!this.data.runtimeDir) this.runtimeDir = undefined;
+    }
     for (const fd of this.logs) {
       try { closeSync(fd); } catch {}
     }

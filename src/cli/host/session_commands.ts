@@ -1,5 +1,5 @@
 import { spawn, type ChildProcess } from 'node:child_process';
-import { chmodSync, closeSync, existsSync, mkdirSync, openSync, readFileSync, readSync, rmSync, statSync, writeFileSync } from 'node:fs';
+import { chmodSync, closeSync, existsSync, mkdirSync, openSync, readFileSync, readSync, statSync, writeFileSync } from 'node:fs';
 import { homedir } from 'node:os';
 import { basename, join } from 'node:path';
 import type { Readable } from 'node:stream';
@@ -9,7 +9,7 @@ import { clientFailure, cmdRemoteStatus } from '../client.js';
 import { applyTo, loadConfig } from '../config.js';
 import { emit, Failure, formatReady, formatStarted, formatStatus, formatStopped, nextStep, printNext, printWarning, sessionCommand } from '../output.js';
 import { COMPONENTS, HostArgs, requireHost, spawnCleared, which } from './common.js';
-import { alive, lock, readSession, reap, stateDir, tail, writeSession } from './state.js';
+import { alive, cleanupWaylandRuntime, lock, readSession, reap, stateDir, tail, writeSession } from './state.js';
 import { ensureSetup } from './setup.js';
 import { attaches, connectHost, desktopEnv, Session } from './supervisor.js';
 import { startWatcher } from './watcher.js';
@@ -19,11 +19,9 @@ export { COMPONENTS };
 
 type Args = HostArgs & Record<string, any>;
 
-async function reapSession(directory: string, session: Record<string, any> | null, signal?: AbortSignal): Promise<void> {
+async function reapSession(directory: string, session: Record<string, any> | null, signal?: AbortSignal): Promise<boolean> {
   await reap(directory, session, signal);
-  if (session?.backend === 'wayland' && typeof session.runtimeDir === 'string' && /^\/tmp\/relay-[a-zA-Z0-9]{6}$/.test(session.runtimeDir)) {
-    rmSync(session.runtimeDir, { recursive: true, force: true });
-  }
+  return cleanupWaylandRuntime(session);
 }
 
 export async function cmdUp(args: Args): Promise<number> {
@@ -178,10 +176,14 @@ export async function cmdDown(args: Args): Promise<number> {
     try { held = await lock(args.name, directory); } catch {}
     if (held) {
       try {
-        session = readSession(args.name) ?? {};
-        if (JSON.stringify(session.supervisor) === JSON.stringify(supervisor)) {
-          await reapSession(directory, session, args.signal);
-          if (['starting', 'ready'].includes(session.state)) writeSession(directory, { ...session, state: 'stopped', stopped: Date.now() / 1000 });
+        session = readSession(args.name);
+        if (JSON.stringify(session?.supervisor) === JSON.stringify(supervisor)) {
+          const cleared = await reapSession(directory, session, args.signal);
+          if (session) {
+            const stopping = ['starting', 'ready'].includes(session.state);
+            if (stopping) Object.assign(session, { state: 'stopped', stopped: Date.now() / 1000 });
+            if (cleared || stopping) writeSession(directory, session);
+          }
         }
       } finally { await held.close(); }
     }
@@ -199,6 +201,7 @@ export async function cmdStatus(args: Args): Promise<number> {
   const running = alive(session.supervisor);
   if (['starting', 'ready'].includes(session.state) && !running) session.state = 'failed';
   delete session.components;
+  delete session.runtimeIdentity;
   session.running = running && session.state === 'ready';
   if (!args['show-token']) delete session.token;
   if (args['show-token'] && session.tokenFile && running) session.token = readFileSync(session.tokenFile, 'utf8').trim();

@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import { spawn, spawnSync } from 'node:child_process';
 import { after, test } from 'node:test';
-import { existsSync, mkdtempSync, mkdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { existsSync, lstatSync, mkdtempSync, mkdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
@@ -19,6 +19,10 @@ const supervisorBundle = buildSync({ entryPoints: [join(root, 'src/cli/host/supe
 const supervisorPath = join(directory, 'supervisor.mjs');
 writeFileSync(supervisorPath, supervisorBundle.outputFiles[0].contents);
 const { resolveBackend, sessionNeeds, splitCommand } = await import(pathToFileURL(supervisorPath).href);
+const commandsBundle = buildSync({ entryPoints: [join(root, 'src/cli/host/session_commands.ts')], bundle: true, platform: 'node', format: 'esm', banner: nodeBanner, write: false });
+const commandsPath = join(directory, 'session-commands.mjs');
+writeFileSync(commandsPath, commandsBundle.outputFiles[0].contents);
+const { cmdDown, cmdStatus } = await import(pathToFileURL(commandsPath).href);
 
 test('a Linux session needs setpriv even when it attaches to a display with no desktop', () => {
   const previous = process.env.PATH;
@@ -68,6 +72,35 @@ test('desktop command parsing preserves quoted empty arguments', () => {
   assert.deepEqual(splitCommand('my-desktop --profile "" --fullscreen'), ['my-desktop', '--profile', '', '--fullscreen']);
 });
 
+test('Wayland cleanup removes only a recorded runtime and clears its state', { skip: typeof process.getuid !== 'function' }, () => {
+  const runtime = mkdtempSync('/tmp/relay-');
+  const unknown = mkdtempSync('/tmp/relay-');
+  try {
+    writeFileSync(join(runtime, 'runtime-file'), '');
+    const stat = lstatSync(runtime, { bigint: true });
+    const session = {
+      backend: 'wayland', runtimeDir: runtime, waylandDisplay: 'wayland-1',
+      runtimeIdentity: { dev: String(stat.dev), ino: String(stat.ino), uid: String(stat.uid) },
+      environment: { XDG_RUNTIME_DIR: runtime, XDG_CONFIG_HOME: '/config' },
+    };
+    state.cleanupWaylandRuntime(session);
+    assert.equal(existsSync(runtime), false);
+    assert.deepEqual(session, { backend: 'wayland', environment: { XDG_CONFIG_HOME: '/config' } });
+    state.cleanupWaylandRuntime(session);
+    const legacy = { backend: 'wayland', runtimeDir: unknown };
+    state.cleanupWaylandRuntime(legacy);
+    assert.equal(existsSync(unknown), true);
+    assert.deepEqual(legacy, { backend: 'wayland' });
+    const stale = { backend: 'wayland', runtimeDir: unknown, runtimeIdentity: { dev: String(stat.dev), ino: String(stat.ino), uid: String(stat.uid) } };
+    state.cleanupWaylandRuntime(stale);
+    assert.equal(existsSync(unknown), true);
+    assert.deepEqual(stale, { backend: 'wayland' });
+  } finally {
+    rmSync(runtime, { recursive: true, force: true });
+    rmSync(unknown, { recursive: true, force: true });
+  }
+});
+
 test('session sweep does not match a longer SCREEN_RELAY_SESSION value', { skip: !existsSync('/proc/self/environ') }, async () => {
   const session = join(directory, 'desk');
   const child = spawn(process.execPath, ['-e', 'setInterval(() => {}, 1000)'], {
@@ -102,6 +135,63 @@ test('process identity is stable while a process lives and dead after it exits',
 const lockToolReady = process.platform === 'darwin'
   ? spawnSync('lockf', ['-s', '-t', '0', join(directory, 'lock-probe'), 'true'], { stdio: 'ignore' }).status === 0
   : spawnSync('flock', ['--version'], { stdio: 'ignore' }).status === 0;
+
+test('down persists Wayland cleanup without rewriting a stopped session again', { skip: !lockToolReady || typeof process.getuid !== 'function' }, async () => {
+  const previous = process.env.XDG_STATE_HOME;
+  process.env.XDG_STATE_HOME = join(directory, 'persisted');
+  const runtime = mkdtempSync('/tmp/relay-');
+  try {
+    const sessionDir = state.stateDir('wayland-cleanup');
+    mkdirSync(sessionDir, { recursive: true });
+    const stat = lstatSync(runtime, { bigint: true });
+    state.writeSession(sessionDir, {
+      state: 'stopped', backend: 'wayland', runtimeDir: runtime, waylandDisplay: 'wayland-1',
+      runtimeIdentity: { dev: String(stat.dev), ino: String(stat.ino), uid: String(stat.uid) },
+      environment: { XDG_RUNTIME_DIR: runtime, SWAYSOCK: `${runtime}/sway.sock` },
+    });
+    await cmdDown({ command: 'down', json: true, name: 'wayland-cleanup' });
+    assert.equal(existsSync(runtime), false);
+    assert.deepEqual(state.readSession('wayland-cleanup'), { state: 'stopped', backend: 'wayland', environment: {} });
+    const file = join(sessionDir, 'session.json');
+    const preserved = '{"state":"stopped","backend":"wayland","environment":{}}\n';
+    writeFileSync(file, preserved);
+    await cmdDown({ command: 'down', json: true, name: 'wayland-cleanup' });
+    assert.equal(readFileSync(file, 'utf8'), preserved);
+  } finally {
+    if (previous === undefined) delete process.env.XDG_STATE_HOME;
+    else process.env.XDG_STATE_HOME = previous;
+    rmSync(runtime, { recursive: true, force: true });
+  }
+});
+
+test('status JSON omits the Wayland runtime identity without changing the session', async () => {
+  const previous = process.env.XDG_STATE_HOME;
+  process.env.XDG_STATE_HOME = join(directory, 'status');
+  const runtime = mkdtempSync(join(tmpdir(), 'relay-status-'));
+  try {
+    const sessionDir = state.stateDir('wayland-status');
+    mkdirSync(sessionDir, { recursive: true });
+    const runtimeIdentity = { dev: '1', ino: '2', uid: '3' };
+    state.writeSession(sessionDir, {
+      state: 'stopped', backend: 'wayland', runtimeDir: runtime, waylandDisplay: 'wayland-1', runtimeIdentity,
+      components: { engine: { pid: 1, start: null } },
+    });
+    const writes = [];
+    const write = process.stdout.write;
+    process.stdout.write = (chunk) => { writes.push(String(chunk)); return true; };
+    try { await cmdStatus({ command: 'status', json: true, name: 'wayland-status' }); }
+    finally { process.stdout.write = write; }
+    const { session } = JSON.parse(writes.join(''));
+    assert.equal('runtimeIdentity' in session, false);
+    assert.equal('components' in session, false);
+    assert.equal(session.runtimeDir, runtime);
+    assert.deepEqual(state.readSession('wayland-status').runtimeIdentity, runtimeIdentity);
+  } finally {
+    if (previous === undefined) delete process.env.XDG_STATE_HOME;
+    else process.env.XDG_STATE_HOME = previous;
+    rmSync(runtime, { recursive: true, force: true });
+  }
+});
 
 test('closing an exited lock holder resolves', { skip: !lockToolReady }, async () => {
   const sessionDirectory = join(directory, 'exited-holder');

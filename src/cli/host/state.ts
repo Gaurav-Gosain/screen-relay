@@ -1,4 +1,4 @@
-import { closeSync, fstatSync, linkSync, openSync, readFileSync, readdirSync, readSync, renameSync, rmSync, writeFileSync } from 'node:fs';
+import { closeSync, fstatSync, linkSync, lstatSync, openSync, readFileSync, readdirSync, readSync, renameSync, rmSync, writeFileSync } from 'node:fs';
 import { execFileSync, spawn } from 'node:child_process';
 import { homedir } from 'node:os';
 import { join } from 'node:path';
@@ -28,6 +28,27 @@ export function writeSession(directory: string, data: SessionData): void {
   const temporary = join(directory, 'session.json.tmp');
   writeFileSync(temporary, `${JSON.stringify(data, null, 2)}\n`);
   renameSync(temporary, join(directory, 'session.json'));
+}
+
+export function cleanupWaylandRuntime(session: SessionData | null): boolean {
+  if (session?.backend !== 'wayland' || typeof session.runtimeDir !== 'string') return false;
+  const runtimeDir = session.runtimeDir;
+  const identity = session.runtimeIdentity;
+  if (/^\/tmp\/relay-[a-zA-Z0-9]{6}$/.test(runtimeDir) && identity && typeof process.getuid === 'function') {
+    try {
+      const stat = lstatSync(runtimeDir, { bigint: true });
+      if (stat.isDirectory() && String(stat.dev) === identity.dev && String(stat.ino) === identity.ino &&
+          String(stat.uid) === identity.uid && stat.uid === BigInt(process.getuid())) {
+        rmSync(runtimeDir, { recursive: true, force: true });
+      }
+    } catch {}
+  }
+  if (session.environment?.XDG_RUNTIME_DIR === runtimeDir) delete session.environment.XDG_RUNTIME_DIR;
+  if (typeof session.environment?.SWAYSOCK === 'string' && session.environment.SWAYSOCK.startsWith(`${runtimeDir}/`)) delete session.environment.SWAYSOCK;
+  delete session.runtimeDir;
+  delete session.runtimeIdentity;
+  delete session.waylandDisplay;
+  return true;
 }
 
 export function tail(path: string, lines = 20): string {
