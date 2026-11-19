@@ -52,19 +52,22 @@ int main() {
   assert(inputLength("17", length) == HTTP_STATUS_BAD_REQUEST && inputLength("-16", length) == HTTP_STATUS_BAD_REQUEST);
   assert(!inputLength("4096", length) && length == 4096 && inputLength("4112", length) == HTTP_STATUS_REQ_ENTITY_TOO_LARGE);
   {
-    Tickets tickets;
-    const auto start = Tickets::Clock::now();
-    tickets.add("a", start);
-    assert(!tickets.available("b", start) && !tickets.available("", start));
-    assert(!tickets.redeem("b", start) && !tickets.redeem("", start));
-    assert(tickets.available("a", start));
-    assert(tickets.redeem("a", start) && !tickets.available("a", start) && !tickets.redeem("a", start));
-    tickets.add("late", start);
-    assert(!tickets.available("late", start + Tickets::lifetime));
-    assert(!tickets.redeem("late", start + Tickets::lifetime));
-    for (size_t i = 0; i <= Tickets::capacity; ++i) tickets.add("t" + std::to_string(i), start);
-    assert(!tickets.redeem("t0", start) && tickets.redeem("t1", start));
-    assert(tickets.redeem("t" + std::to_string(Tickets::capacity), start));
+    Grants grants;
+    const auto start = Grants::Clock::now();
+    const auto watch = grants.issue("watch", GrantScope::watch, start, 1);
+    const auto control = grants.issue("control", GrantScope::control, start, 2);
+    assert(watch && control && watch != control);
+    assert(grants.find("watch", start)->scope == GrantScope::watch);
+    assert(grants.find("control", start)->scope == GrantScope::control);
+    assert(!grants.find("missing", start));
+    assert(!grants.active(watch, start + std::chrono::seconds(1)));
+    assert(!grants.find("watch", start + std::chrono::seconds(1)));
+    assert(grants.revoke(control) && !grants.active(control, start));
+    for (size_t i = 0; i < Grants::capacity; ++i) {
+      assert(grants.issue(std::to_string(i), GrantScope::watch, start + std::chrono::seconds(2), 1));
+    }
+    assert(!grants.issue("full", GrantScope::watch, start + std::chrono::seconds(2), 1));
+    assert(grants.find("0", start + std::chrono::seconds(2)));
   }
   {
     unsigned char first[300] = {}, second[300] = {};
@@ -108,9 +111,21 @@ int main() {
       {Socket::none, 0, false, false, false, false, false},
     };
     for (const auto& row : rows) {
-      const auto plan = connectionPlan(row.socket, row.viewerCount, row.owns, row.control);
+      const auto plan = connectionPlan(row.socket, row.viewerCount, row.owns, row.control, 0, false, false);
       assert(plan.open == row.open && plan.closeStream == row.closeStream && plan.closeControl == row.closeControl);
     }
+    const auto grantLimit = max_viewers - 1;
+    assert(!connectionPlan(Socket::watch, grantLimit, false, false, grantLimit, true, false).open);
+    assert(connectionPlan(Socket::watch, grantLimit, false, false, grantLimit, false, false).open);
+    assert(connectionPlan(Socket::watch, max_viewers - 1, false, false, grantLimit - 1, true, false).open);
+    assert(!connectionPlan(Socket::watch, max_viewers, false, false, grantLimit - 1, true, false).open);
+    assert(!connectionPlan(Socket::take, max_viewers, true, false, grantLimit, true, false).open);
+    const auto replacement = connectionPlan(Socket::take, grantLimit, true, false, grantLimit, true, true);
+    assert(replacement.open && replacement.closeStream);
+    assert(!connectionPlan(Socket::take, max_viewers, true, false, max_viewers, true, true).open);
+    assert(!connectionPlan(Socket::take, max_viewers + 1, true, false, grantLimit, false, true).open);
+    assert(connectionPlan(Socket::take, max_viewers, true, false, grantLimit, false, true).open);
+    assert(connectionPlan(Socket::control, grantLimit, false, false, grantLimit, true, false).open);
   }
   assert(clipboardLength("", length) == HTTP_STATUS_LENGTH_REQUIRED && clipboardLength("x", length) == HTTP_STATUS_BAD_REQUEST);
   assert(!clipboardLength("0", length) && length == 0);

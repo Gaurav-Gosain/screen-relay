@@ -142,17 +142,24 @@ std::string header(lws* wsi, lws_token_indexes token) {
   const int count = lws_hdr_copy(wsi, value, sizeof(value), token);
   return count > 0 ? std::string(value, size_t(count)) : "";
 }
-bool authenticated(const Config& config, lws* wsi, bool websocket) {
-  if (config.token.empty()) return true;
-  if (!websocket) return secretEqual(header(wsi, WSI_TOKEN_HTTP_AUTHORIZATION), "Bearer " + config.token);
+std::string websocketBearer(lws* wsi) {
   std::istringstream protocols(header(wsi, WSI_TOKEN_PROTOCOL));
-  std::string protocol;
+  std::string protocol, bearer;
   while (std::getline(protocols, protocol, ',')) {
     const auto first = protocol.find_first_not_of(" \t");
     const auto last = protocol.find_last_not_of(" \t");
-    if (first != std::string::npos && secretEqual(protocol.substr(first, last-first+1), "bearer." + config.token)) return true;
+    if (first == std::string::npos) continue;
+    protocol = protocol.substr(first, last-first+1);
+    if (protocol.rfind("bearer.", 0) != 0) continue;
+    if (!bearer.empty() || protocol.size() != 71) return {};
+    bearer = protocol.substr(7);
   }
-  return false;
+  return bearer;
+}
+bool authenticated(const Config& config, lws* wsi, bool websocket) {
+  if (config.token.empty()) return true;
+  if (websocket) return secretEqual(websocketBearer(wsi), config.token);
+  return secretEqual(header(wsi, WSI_TOKEN_HTTP_AUTHORIZATION), "Bearer " + config.token);
 }
 bool secureRandom(unsigned char* out, size_t size) {
 #ifdef _WIN32
@@ -165,42 +172,26 @@ bool secureRandom(unsigned char* out, size_t size) {
   return true;
 #endif
 }
-void Tickets::expire(Clock::time_point now) {
-  waiting.erase(std::remove_if(waiting.begin(), waiting.end(),
-                               [now](const auto& entry) { return now >= entry.second; }),
-                waiting.end());
+uint64_t Grants::issue(std::string token, GrantScope scope, Clock::time_point now, uint64_t ttl) {
+  grants.erase(std::remove_if(grants.begin(), grants.end(), [now](const auto& grant) { return now >= grant.expires; }), grants.end());
+  if (grants.size() >= capacity || last_id == UINT64_MAX || !ttl || ttl > max_ttl || token.empty() || find(token, now)) return 0;
+  const auto id = ++last_id;
+  grants.push_back({id, std::move(token), scope, now + std::chrono::seconds(ttl)});
+  return id;
 }
-void Tickets::add(const std::string& ticket, Clock::time_point now) {
-  expire(now);
-  if (waiting.size() >= capacity) waiting.erase(waiting.begin());
-  waiting.emplace_back(ticket, now + lifetime);
+const Grants::Grant* Grants::find(const std::string& token, Clock::time_point now) const {
+  if (token.empty()) return nullptr;
+  for (const auto& grant : grants) if (now < grant.expires && secretEqual(token, grant.token)) return &grant;
+  return nullptr;
 }
-Tickets::Entries::const_iterator Tickets::find(const std::string& ticket, Clock::time_point now) const {
-  if (ticket.empty()) return waiting.end();
-  return std::find_if(waiting.begin(), waiting.end(), [&](const auto& entry) {
-    return now < entry.second && secretEqual(entry.first, ticket);
-  });
+bool Grants::active(uint64_t id, Clock::time_point now) const {
+  return std::any_of(grants.begin(), grants.end(), [id, now](const auto& grant) { return id == grant.id && now < grant.expires; });
 }
-bool Tickets::available(const std::string& ticket, Clock::time_point now) const {
-  return find(ticket, now) != waiting.end();
-}
-bool Tickets::redeem(const std::string& ticket, Clock::time_point now) {
-  const auto entry = find(ticket, now);
-  if (entry == waiting.end()) return false;
-  waiting.erase(entry);
+bool Grants::revoke(uint64_t id) {
+  const auto entry = std::find_if(grants.begin(), grants.end(), [id](const auto& grant) { return grant.id == id; });
+  if (entry == grants.end()) return false;
+  grants.erase(entry);
   return true;
-}
-std::string offeredTicket(lws* wsi) {
-  std::istringstream protocols(header(wsi, WSI_TOKEN_PROTOCOL));
-  std::string protocol;
-  while (std::getline(protocols, protocol, ',')) {
-    const auto first = protocol.find_first_not_of(" \t");
-    const auto last = protocol.find_last_not_of(" \t");
-    if (first == std::string::npos) continue;
-    protocol = protocol.substr(first, last-first+1);
-    if (protocol.rfind("ticket.", 0) == 0) return protocol.substr(7);
-  }
-  return "";
 }
 bool loopbackOrigin(const std::string& origin) {
   const auto scheme = origin.find("://");

@@ -21,7 +21,7 @@ export interface Capabilities {
   version: number; backend: string; width: number; height: number; fps: number;
   input: { keyboard: boolean; pointer: boolean; buttons: boolean; wheel: boolean };
   screenshot: string; control: string; wayland: boolean; max_input_pending: number;
-  input_endpoint: string; max_input_batch: number; tickets: string;
+  input_endpoint: string; max_input_batch: number;
   cursor: boolean; audio: boolean; clipboard: boolean; resize: boolean; ime: boolean;
   clipboard_endpoint?: string; max_clipboard_bytes?: number;
 }

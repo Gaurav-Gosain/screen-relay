@@ -58,7 +58,24 @@ Adding `clipboard=1` to a supported stream URL does not change these rules. A re
 
 When the session has a token, offer both `nsl1` and `bearer.TOKEN` as subprotocols; the server selects `nsl1`. Do not put the token in a request URL.
 
-To let a viewer connect without giving it the token, send `POST /tickets` with the token as `Authorization: Bearer TOKEN`. The response is `{"ticket":"…","expires_in":60}`. The viewer offers `nsl1` and `ticket.TICKET` instead of `bearer.TOKEN`. A ticket opens one WebSocket, within 60 seconds; a connection the server refuses for another reason, such as `/control` while a viewer owns input, doesn't use it. A ticket doesn't authorize HTTP requests. The bundled viewer doesn't use tickets yet, so only custom clients can offer `ticket.TICKET`. Up to 16 unused tickets are kept, and requesting another drops the oldest.
+### Grants
+
+A grant is a second credential with a narrower scope and a lifetime, for a viewer or client that should not hold the session token. Send `POST /grants/watch` or `POST /grants/control` with the session token as `Authorization: Bearer TOKEN`. Add `?ttl=SECONDS` to set the lifetime; the default and the maximum are 3600. The response is `{"id":"…","token":"…","expires_in":3600,"scope":"watch"}`. A client offers the grant's `token` as `bearer.TOKEN`, the same way as the session token.
+
+| Scope | WebSocket connections it opens |
+| --- | --- |
+| `watch` | `/stream?view=1` |
+| `control` | `/stream`, `/stream?take=1`, `/stream?view=1`, and `/control` |
+
+A grant never opens a URL with `clipboard=1`, and it does not authorize HTTP requests, so `/clipboard`, `/input`, `/screenshot.png`, `/capabilities`, `/metrics`, and `/grants` still need the session token. Grant connections share up to three browser slots. One of the four browser slots is reserved for a connection that uses the session token.
+
+A grant can open connections until it ends. It ends when its lifetime runs out, or when you send `DELETE /grants/ID` with the session token, which returns 200. The engine then closes the connections opened with that grant and refuses new ones. Connections opened with the session token or another grant stay open. The engine keeps at most 32 active grants in memory. A request to create a grant returns HTTP 503 `grant_limit` when that limit is reached, or HTTP 400 `invalid_ttl` when the requested lifetime is outside 1 to 3600 whole seconds. Stopping the session ends them all. A live connection closed because its grant ended receives WebSocket close code `1008` with reason `grant ended`.
+
+The bundled viewer accepts a grant in its link. `#token=GRANT_TOKEN&scope=watch` opens a watch grant: the viewer connects only to `/stream?view=1` and offers no way to take control. `#token=GRANT_TOKEN&scope=control` opens a control grant: the viewer connects to `/stream`, `/stream?take=1`, or `/stream?view=1` without `clipboard=1`. With either scope the viewer sends no HTTP request. A link with only `#token=` is treated as the session token.
+
+### Messages
+
+Every message starts with this 20-byte header.
 
 | Header offset | Size | Field |
 | ---: | ---: | --- |

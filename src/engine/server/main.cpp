@@ -75,6 +75,7 @@ int main(int argc, char** argv) {
       std::cerr << "WebSocket service failed\n";
       result = 1; break;
     }
+    s.expireGrants();
   }
   s.end(); s.streams[0]->capture.stop(); s.screenshot.stop(); s.clipboard.stop(); s.input.reset();
   const auto stats=s.streams[0]->capture.stats();

@@ -21,36 +21,32 @@ bool parseConfig(int argc, char** argv, Config& config);
 bool secretEqual(const std::string& a, const std::string& b);
 std::string header(lws* wsi, lws_token_indexes token);
 bool authenticated(const Config& config, lws* wsi, bool websocket = false);
-/**
- * One-time viewer tickets. A client with the token asks for one and hands it to
- * a viewer, which opens one WebSocket with it. A ticket works once, and only
- * until it expires, so a leaked viewer link stops working after its first use.
- */
-class Tickets {
+enum class GrantScope { watch, control };
+class Grants {
  public:
   using Clock = std::chrono::steady_clock;
-  static constexpr size_t capacity = 16;
-  static constexpr size_t bytes = 32;
-  static constexpr std::chrono::seconds lifetime{60};
-  /** Keeps a ticket; the oldest goes when capacity are already waiting. */
-  void add(const std::string& ticket, Clock::time_point now);
-  /** Checks whether a ticket is still valid without using it. */
-  bool available(const std::string& ticket, Clock::time_point now) const;
-  /** Uses up a ticket; false when it is unknown, used, or expired. */
-  bool redeem(const std::string& ticket, Clock::time_point now);
+  static constexpr size_t capacity = 32;
+  static constexpr uint64_t max_ttl = 3600;
+  struct Grant {
+    uint64_t id;
+    std::string token;
+    GrantScope scope;
+    Clock::time_point expires;
+  };
+  uint64_t issue(std::string token, GrantScope scope, Clock::time_point now, uint64_t ttl);
+  const Grant* find(const std::string& token, Clock::time_point now) const;
+  bool active(uint64_t id, Clock::time_point now) const;
+  bool revoke(uint64_t id);
  private:
-  using Entries = std::vector<std::pair<std::string, Clock::time_point>>;
-  Entries waiting;
-  Entries::const_iterator find(const std::string& ticket, Clock::time_point now) const;
-  void expire(Clock::time_point now);
+  std::vector<Grant> grants;
+  uint64_t last_id = 0;
 };
 /**
  * Fills out with bytes from the OS CSPRNG. lws_get_random isn't safe for
  * secrets: libwebsockets before 5.1 uses unseeded rand() on Windows.
  */
 bool secureRandom(unsigned char* out, size_t size);
-/** The ticket a WebSocket offers as its ticket.TICKET subprotocol, or "". */
-std::string offeredTicket(lws* wsi);
+std::string websocketBearer(lws* wsi);
 bool loopbackOrigin(const std::string& origin);
 bool loopbackHost(const std::string& host);
 bool localRequest(const Config& config, lws* wsi);

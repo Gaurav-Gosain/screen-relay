@@ -84,16 +84,20 @@ Target viewerTarget(const std::string& target) {
   if (target == "/control") return {Socket::control, false};
   return {};
 }
-ConnectionPlan connectionPlan(Socket socket, size_t viewerCount, bool streamOwnsInput, bool controlOpen) {
-  const bool capacity = viewerCount < max_viewers;
+ConnectionPlan connectionPlan(Socket socket, size_t viewerCount, bool streamOwnsInput, bool controlOpen,
+                              size_t grantViewerCount, bool grant, bool inputViewerHasGrant) {
   const bool idle = !streamOwnsInput && !controlOpen;
+  const bool replacing = socket == Socket::take && streamOwnsInput;
+  const bool capacity = viewerCount < max_viewers || (viewerCount == max_viewers && replacing);
+  const bool grantCapacity = !grant || grantViewerCount < max_viewers - 1 ||
+                             (grantViewerCount == max_viewers - 1 && replacing && inputViewerHasGrant);
   switch (socket) {
     case Socket::none: return {};
     case Socket::control: return {idle, false, false};
-    case Socket::watch: return {capacity, false, false};
-    case Socket::stream: return {capacity && idle, false, false};
+    case Socket::watch: return {capacity && grantCapacity, false, false};
+    case Socket::stream: return {capacity && grantCapacity && idle, false, false};
     case Socket::take:
-      return capacity || streamOwnsInput ? ConnectionPlan{true, streamOwnsInput, controlOpen} : ConnectionPlan{};
+      return capacity && grantCapacity ? ConnectionPlan{true, streamOwnsInput, controlOpen} : ConnectionPlan{};
   }
   return {};
 }

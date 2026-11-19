@@ -23,13 +23,12 @@
 namespace relay {
 struct HttpResponse {
   unsigned char body[2048], input[max_input_batch * 16];
-  char pending_ticket[2 * Tickets::bytes + 1];
   size_t length, input_length, input_expected;
   std::vector<uint8_t>* image;
   std::string* upload;
   size_t offset;
   Socket socket;
-  uint64_t upload_expected;
+  uint64_t upload_expected, grant_id;
   bool image_headers, clipboard, input_reply, input_headers, closing;
   unsigned reply_status, image_status;
   const char* image_type;
@@ -78,7 +77,7 @@ struct Server {
     int write(bool proxy);
   };
   Config config;
-  Tickets tickets;
+  Grants grants;
   lws_context* context = nullptr;
   std::array<std::unique_ptr<Stream>, max_viewers> streams;
   lws* input_viewer = nullptr;
@@ -101,12 +100,13 @@ struct Server {
   uint16_t width = 0, height = 0;
   explicit Server(Config settings);
   Stream* streamFor(lws* wsi);
-  ConnectionPlan planConnection(Socket socket);
+  ConnectionPlan planConnection(Socket socket, bool grant);
   int startStream(lws* wsi, Socket socket, const ConnectionPlan& plan, bool clipboardNotices);
   void release();
   void endStream(lws* wsi);
   void endControl();
   void end();
+  void expireGrants();
   /// Sends a close code from the timer callback; the default is the takeover code.
   void evict(lws* wsi, uint16_t code = close_taken, const char* reason = "taken");
   bool holdsInput() const { return control || input_viewer; }
