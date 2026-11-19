@@ -25,7 +25,7 @@ Run screen-relay in a container instead of installing it on the host, and open t
    docker logs desk
    ```
 
-   Open the link. If you published a different port, change the port in the link. To print the token again, run `docker exec desk screen-relay status --show-token`.
+   Open the link. If you published a different port, change the port in the link. Keep the link and any token output private. To print the token again, run `docker exec desk screen-relay status --show-token`.
 
 Stop the session and remove the container:
 
@@ -61,12 +61,20 @@ To run client commands from the host, you need the URL and the token, because th
    npm install -g screen-relay
    ```
 
-2. Copy the token from the container, and set the target:
+2. Copy the token into a new private directory, and set the target only if the copy succeeds:
 
    ```sh
-   docker exec desk sh -c 'cat ~/.local/state/screen-relay/default/token' > token
-   export SCREEN_RELAY_URL=http://127.0.0.1:8080
-   export SCREEN_RELAY_TOKEN_FILE=$PWD/token
+   if relay_token_dir=$(mktemp -d "$HOME/.screen-relay-token.XXXXXX"); then
+     if (umask 077; docker exec desk sh -c 'cat ~/.local/state/screen-relay/default/token' > "$relay_token_dir/token") &&
+        [ -s "$relay_token_dir/token" ]; then
+       export SCREEN_RELAY_URL=http://127.0.0.1:8080
+       export SCREEN_RELAY_TOKEN_FILE="$relay_token_dir/token"
+     else
+       rm -f "$relay_token_dir/token"
+       rmdir "$relay_token_dir"
+       printf '%s\n' 'Could not copy the session token.' >&2
+     fi
+   fi
    ```
 
 3. Check the connection:
@@ -75,4 +83,4 @@ To run client commands from the host, you need the URL and the token, because th
    screen-relay status
    ```
 
-Setting only `SCREEN_RELAY_URL` fails with `unauthorized`. A new container has a new token, so copy it again after a restart.
+Setting only `SCREEN_RELAY_URL` fails with `unauthorized`. Delete the local token file and its directory when you no longer need them. After restarting the session, copy its new token into a fresh private directory.

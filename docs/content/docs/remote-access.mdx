@@ -169,13 +169,21 @@ A custom client sends the grant's `token` the same way as the session token. The
    npm install -g screen-relay
    ```
 
-2. On the VM, run `screen-relay status --show-token`, and copy the token into a file named `token` on your laptop.
+2. On the VM, run `screen-relay status --show-token`. On your laptop, save the token in a new private directory. In a POSIX shell, run the following, paste only the token, press Enter, then press Ctrl+D:
 
-3. Set the target once per shell, then run client commands:
+   ```sh
+   if relay_token_dir=$(mktemp -d "$HOME/.screen-relay-token.XXXXXX"); then
+     (umask 077; cat > "$relay_token_dir/token")
+   fi
+   ```
+
+   Keep the token private. Delete the file and its directory when you no longer need them.
+
+3. In the same shell where you saved the token, set the target and run client commands:
 
    ```sh
    export SCREEN_RELAY_URL=https://desktop.example.com
-   export SCREEN_RELAY_TOKEN_FILE=./token
+   export SCREEN_RELAY_TOKEN_FILE="$relay_token_dir/token"
    screen-relay status
    screen-relay screenshot screen.png
    ```
