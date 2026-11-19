@@ -55,6 +55,11 @@ int main(int argc, char** argv) {
   if (!s.context) { std::cerr << "Cannot listen on " << config.bind << ':' << config.port << '\n'; s.streams[0]->capture.stop(); return 1; }
   s.wake->set(s.context);
   s.screenshot.start(s.context);
+  std::unique_ptr<relay::ClipboardBackend> clipboard;
+  try {
+    clipboard = backend.clipboard([&s] { s.clipboard_changed = true; s.wake->cancel(); });
+  } catch (const std::exception& error) { std::cerr << "Clipboard unavailable: " << error.what() << '\n'; }
+  s.clipboard.start(std::move(clipboard), [wake = s.wake] { wake->cancel(); });
   heartbeatContext=s.context;
   lws_sul_schedule(s.context, 0, &heartbeat, heartbeatTick, 100000);
   int result = 0;
@@ -71,7 +76,7 @@ int main(int argc, char** argv) {
       result = 1; break;
     }
   }
-  s.end(); s.streams[0]->capture.stop(); s.screenshot.stop(); s.input.reset();
+  s.end(); s.streams[0]->capture.stop(); s.screenshot.stop(); s.clipboard.stop(); s.input.reset();
   const auto stats=s.streams[0]->capture.stats();
   std::cerr << "capture_stats captures=" << stats.captures << " encoded=" << stats.encoded
             << " capture_ns=" << stats.capture_ns << " convert_ns=" << stats.convert_ns << " encode_ns=" << stats.encode_ns << '\n';

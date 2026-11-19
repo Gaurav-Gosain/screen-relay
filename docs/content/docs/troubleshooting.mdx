@@ -46,6 +46,7 @@ Stopping a session also stops the processes it started. On Windows, apps started
 | --- | --- |
 | WebCodecs unavailable or a decoder error | Use a browser with H.264 WebCodecs, and open the viewer over `https://` or `http://127.0.0.1`. Check the viewer status. |
 | The viewer repeatedly fails to connect when other viewers are open | Only four viewers can connect at once. Close a viewer and reconnect. |
+| Ctrl+V or Cmd+V pastes the desktop's old clipboard, or a desktop copy does not reach your computer | The viewer needs control and a secure context: open it over `https://` or `http://127.0.0.1`. Check that `capabilities.clipboard` is `true`; on Wayland, the compositor must provide `wlr-data-control`. Use the **Clipboard** button to copy or send the text by hand. |
 | The viewer cannot connect through a proxy | Forward WebSocket upgrades, preserve `Host` and `Origin`, and use the `--public` URL. See [Remote access](/docs/remote-access). |
 | The picture is too small or blurry | Under **Scaling**, choose **Actual size** or **Sharp pixels**. To resize the desktop, set `display.resolution` and restart. With `--display`, screen-relay uses the existing screen size. See [Configuration](/docs/configuration). |
 | The desktop streams at about 60 fps although `stream.fps` is higher | A compositor repaints at most 60 times a second. See [The desktop holds at 60 fps](#the-desktop-holds-at-60-fps). |

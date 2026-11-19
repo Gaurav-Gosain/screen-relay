@@ -1,5 +1,6 @@
 #pragma once
 
+#include "clipboard.hpp"
 #include "config.hpp"
 #include "core/capture.hpp"
 #include "core/flow.hpp"
@@ -22,12 +23,16 @@
 namespace relay {
 struct HttpResponse {
   unsigned char body[2048], input[max_input_batch * 16];
+  char pending_ticket[2 * Tickets::bytes + 1];
   size_t length, input_length, input_expected;
   std::vector<uint8_t>* image;
+  std::string* upload;
   size_t offset;
   Socket socket;
-  bool image_headers, screenshot_error, input_reply, input_headers, closing;
-  unsigned reply_status;
+  uint64_t upload_expected;
+  bool image_headers, clipboard, input_reply, input_headers, closing;
+  unsigned reply_status, image_status;
+  const char* image_type;
 };
 struct Server {
   struct InputReply {
@@ -54,6 +59,7 @@ struct Server {
     std::deque<EncodedFrame> pending;
     std::optional<CursorImage> pending_cursor;
     bool last_write_cursor = false;
+    bool clipboard_notices = false, clipboard_pending = false;
     size_t buffered_stream_bytes = 0;
     uint32_t stream_notsent_lowat = 0;
     uint64_t flow_timer_due_us = 0;
@@ -81,6 +87,8 @@ struct Server {
   std::set<lws*> closing;
   Screenshot screenshot;
   lws* screenshot_client = nullptr;
+  ClipboardWorker clipboard;
+  std::atomic<bool> clipboard_changed{false};
   bool control_ready = false;
   uint32_t control_generation = 0;
   std::vector<uint8_t> control_received;
@@ -94,7 +102,7 @@ struct Server {
   explicit Server(Config settings);
   Stream* streamFor(lws* wsi);
   ConnectionPlan planConnection(Socket socket);
-  int startStream(lws* wsi, Socket socket, const ConnectionPlan& plan);
+  int startStream(lws* wsi, Socket socket, const ConnectionPlan& plan, bool clipboardNotices);
   void release();
   void endStream(lws* wsi);
   void endControl();

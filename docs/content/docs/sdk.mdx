@@ -55,7 +55,7 @@ try {
 - An SDK control session owns input until it closes or a viewer takes control. A viewer that opens during an SDK control session can watch without interrupting it.
 - Choose **Release control** in a viewer that owns input, or close it, before sending input from the CLI or SDK. Otherwise the call returns `busy`.
 - A viewer that chooses **Take control** ends a control session with `control_taken`.
-- Status, capabilities, and screenshots do not need input control.
+- Status, capabilities, screenshots, and the clipboard do not need input control.
 
 ## Methods
 
@@ -72,6 +72,8 @@ Coordinates are fractions from `0` to `1`, measured from the top-left. See [Inpu
 | `capabilities()` | Backend, screen size, `fps`, `max_input_batch`, and features. |
 | `status()` | Transport metrics; unavailable resource counters are `null`. |
 | `screenshot()` | PNG bytes, without the viewer's cursor overlay. |
+| `clipboard()` | The clipboard text, or an empty string when the clipboard holds no text. |
+| `setClipboard(text)` | Replace the clipboard text; an empty string clears it. Text is UTF-8, up to 256 KiB, without NUL characters. Returns no value. |
 
 `capabilities(options)`, `status(options)`, and `screenshot(options, path?)` are also standalone exports. `screenshot` returns PNG bytes and writes them to `path` when one is given.
 

@@ -247,6 +247,30 @@ screen-relay input '[{"type":"keyDown","key":4},{"type":"keyUp","key":4}]'
 | --- | --- |
 | `--stdin` | Read the JSON array from stdin instead of an argument. |
 
+### clipboard
+
+Reads or replaces the desktop's clipboard text.
+
+```sh
+screen-relay clipboard get
+screen-relay clipboard set "https://example.com"
+```
+
+| Command | Meaning |
+| --- | --- |
+| `get` | Print the clipboard text exactly, with no newline added. With `--json`, print `clipboard.text` and `clipboard.bytes`. |
+| `set TEXT` | Replace the clipboard text. `set ""` clears it. |
+
+| Option | Meaning |
+| --- | --- |
+| `--stdin` | With `set`, read the text from stdin instead of an argument. |
+
+- Text is UTF-8, up to 256 KiB, without NUL characters.
+- The clipboard works while another client owns input.
+- `set` does not paste. Press the paste keys afterward, such as `screen-relay key ctrl+v`, or `screen-relay key super+v` on macOS.
+- Setting a long text and pasting it is faster than typing it, and it does not depend on the keyboard layout.
+- On Linux, text that screen-relay set leaves the clipboard when the session stops, unless the desktop runs a clipboard manager.
+
 ### Input rules
 
 Coordinates are fractions from `0` to `1`, measured from the top-left.
@@ -374,6 +398,8 @@ Color follows, in order:
 | `status` | `session` |
 | `screenshot` | `screenshot` (`path`, `width`, `height`, `bytes`), `outcome` |
 | Input commands | `input.events`, `outcome` |
+| `clipboard get` | `clipboard` (`text`, `bytes`) |
+| `clipboard set` | `clipboard` (`bytes`), `outcome` |
 | `logs` | `logs`, keyed by component |
 | `run` | `app.pid`, `app.command`, `outcome` |
 | `doctor` | `checks`, `summary` |
@@ -401,6 +427,7 @@ Each `next` entry has `command` and `argv`. `data` can contain `component`, `log
 | `unauthorized` | Token missing or wrong. Check `--token-file`. |
 | `forbidden` | Host or Origin rejected. Use public origin or loopback. |
 | `unsupported_input` | Backend cannot produce the input. Change input or keyboard layout. |
+| `clipboard_unavailable` | The desktop has no clipboard the engine can use, or the app that owns it did not answer. Check `capabilities.clipboard` in `screen-relay status --json`. |
 | `busy` | Input is owned, the queue is full, or a screenshot is in progress. Release control or retry. |
 | `control_taken` | A viewer took control and ended the SDK control session. Connect again after the viewer releases control. |
 | `unreachable` | Connection, DNS, or TLS failed. Check URL and certificate. |

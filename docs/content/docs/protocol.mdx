@@ -38,6 +38,19 @@ Replace the URL and securely copy the session token into `./token`. For a local 
 
 `POST /input` takes binary records. To write your own client, see the [wire protocol](https://github.com/vercel-labs/screen-relay/blob/main/PROTOCOL.md).
 
+## Read and set the clipboard
+
+`GET /clipboard` returns the desktop's clipboard text as `{"text":"…"}`, and an empty string when the clipboard holds no text. `POST /clipboard` replaces it with the request body, read as UTF-8 text:
+
+```sh
+curl -fsS http://127.0.0.1:8080/clipboard
+curl -fsS --data-binary 'Hello from the API' http://127.0.0.1:8080/clipboard
+```
+
+A write returns `{"length":N}`, the number of bytes set, and an empty body clears the clipboard. The clipboard works while another client owns input, like a screenshot. Text is limited to 256 KiB and cannot contain NUL characters. To paste the text into an app, send the paste keys afterward, such as `screen-relay key ctrl+v`.
+
+`capabilities.clipboard` is `true` when the desktop has a clipboard the engine can use. On Wayland, the compositor must support the wlr-data-control protocol, which sway and labwc do.
+
 ## Endpoints
 
 | Method | Path | What it does |
@@ -45,10 +58,11 @@ Replace the URL and securely copy the session token into `./token`. For a local 
 | `GET` | <span id="get-capabilities" />`/capabilities` | Returns the desktop size, backend, features, and input limits as JSON. |
 | `GET` | `/screenshot.png` | Returns a PNG without the cursor, even when another client owns input; maximum 8 MiB and a 5-second timeout. |
 | `POST` | <span id="post-input" />`/input` | Sends a batch of binary input records. |
+| `GET`, `POST` | <span id="clipboard" />`/clipboard` | Reads or replaces the clipboard text. |
 | `GET` | <span id="get-metrics" />`/metrics` | Returns stream and resource metrics as JSON. |
 | `POST` | <span id="post-tickets" />`/tickets` | Returns a one-time viewer ticket that opens one WebSocket within 60 seconds. |
 | `GET` | `/`, `/index.html`, `/viewer.js` | Serves the viewer. |
-| WebSocket | `/stream` | Streams video and cursor images when supported. With no query parameter, it claims idle input. Use `?view=1` to watch without input or `?take=1` to take input from the current owner, which closes with code 4001. |
+| WebSocket | `/stream` | Streams video and cursor images when supported. With no query parameter, it claims idle input. Use `?view=1` to watch without input or `?take=1` to take input from the current owner, which closes with code 4001. Add `clipboard=1` to a claiming or takeover stream to receive clipboard notices. |
 | WebSocket | `/control` | Sends input and receives a response for each event, without video. It can run next to a view-only `/stream`, and closes with code 4001 when a viewer takes control or code 4003 when it connects while input is owned. |
 
 The viewer HTML is served with `Content-Security-Policy: frame-ancestors 'none'` and `X-Frame-Options: DENY`, so another site cannot embed it and forward clicks to the desktop.
@@ -67,15 +81,19 @@ The viewer HTML is served with `Content-Security-Policy: frame-ancestors 'none'`
 | Status | What to do |
 | --- | --- |
 | 400 `invalid_input` | Send a nonempty batch of valid records with the correct `Content-Length`. |
+| 400 `invalid_text` | Send clipboard text as UTF-8 without NUL characters. |
 | 401 `unauthorized` | Send the correct session token. |
 | 403 `forbidden` | Check the `Host` and `Origin` rules. |
 | 404 `not_found` | Check the endpoint path. |
 | 405 `method_not_allowed` | Use the method listed for the endpoint. |
 | 409 `busy` | Close the input owner or wait, then check for partial input before retrying. A viewer that owns input is one owner; a view-only viewer is not. |
-| 411 `length_required` | Include `Content-Length` on `POST /input`. |
-| 413 `too_large` | Send no more than 256 input records per request. |
+| 411 `length_required` | Include `Content-Length` on `POST /input` and `POST /clipboard`. |
+| 413 `too_large` | Send no more than 256 input records per request or 256 KiB of clipboard text. |
+| 413 `clipboard_too_large` | The clipboard holds more than the 256 KiB read limit. |
 | 422 `unsupported_input` | Change the input or keyboard layout. |
-| 503 `busy` | Wait for the other screenshot to finish. |
+| 503 `busy` | Wait for the other screenshot request to finish. |
+| 503 `clipboard_busy` | Wait for the clipboard request queue to drain, then retry. |
+| 503 `clipboard_unavailable` | The desktop has no clipboard the engine can use, or the app that owns the clipboard did not answer within 2 seconds. Check `capabilities.clipboard`. |
 | 503 `screenshot_unavailable` | Check `screen-relay logs engine` and try again. |
 
 Errors are JSON with an `error` field.

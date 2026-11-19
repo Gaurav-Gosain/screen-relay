@@ -34,6 +34,8 @@ scroll(x, y, { dx?, dy? })
 key(...combos)
 type(text)
 input(events)                                      // raw SDK input events
+clipboard(): Promise<string>                       // clipboard text, '' when it holds no text
+setClipboard(text): Promise<void>                  // UTF-8, up to 256 KiB; '' clears it
 ```
 
 ## connect

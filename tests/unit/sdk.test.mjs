@@ -328,3 +328,34 @@ test('takeover ends session input and screenshots but leaves HTTP status and cap
     await new Promise(resolve => server.close(resolve));
   }
 });
+
+test('clipboard text round-trips as UTF-8 and engine refusals keep their reasons', async () => {
+  let stored = '', error;
+  const server = createServer(async (request, response) => {
+    response.setHeader('content-type', 'application/json');
+    if (error) { response.writeHead(503); return response.end(JSON.stringify({ error })); }
+    if (request.method === 'GET') return response.end(JSON.stringify({ text: stored }));
+    const chunks = [];
+    for await (const chunk of request) chunks.push(chunk);
+    stored = Buffer.concat(chunks).toString('utf8');
+    response.end(JSON.stringify({ length: Buffer.concat(chunks).length }));
+  });
+  server.listen(0, '127.0.0.1');
+  await once(server, 'listening');
+  try {
+    const client = createClient({ url: `http://127.0.0.1:${server.address().port}` });
+    await client.setClipboard('naïve ✓ 🚀\nline');
+    assert.equal(await client.clipboard(), 'naïve ✓ 🚀\nline');
+    await client.setClipboard('');
+    assert.equal(await client.clipboard(), '');
+    await assert.rejects(client.setClipboard('a\0b'), { reason: 'invalid_input' });
+    await assert.rejects(client.setClipboard('é'.repeat(131073)), { reason: 'invalid_input' });
+    error = 'clipboard_unavailable';
+    await assert.rejects(client.clipboard(), { reason: 'clipboard_unavailable' });
+    error = 'clipboard_busy';
+    await assert.rejects(client.clipboard(), { reason: 'busy', hint: 'Wait briefly, then retry.' });
+  } finally {
+    server.close();
+    await once(server, 'close');
+  }
+});

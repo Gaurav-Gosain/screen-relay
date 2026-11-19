@@ -100,6 +100,7 @@ For a 1920x1080 screenshot, pixel `480,810` is `screen-relay click 0.25 0.75`, a
 
 - `screen-relay type <text>` sends layout-neutral text events, one per Unicode scalar value. The remote keyboard layout decides each character, so accents, symbols and non-US layouts work. Use it for text.
 - `screen-relay key <combo>...` sends physical key combinations, in order, such as `ctrl+l`, `alt+Tab`, `cmd+shift+t` and `Enter`. Use it for shortcuts, arrows, function keys and Escape. Modifiers are `ctrl`, `shift`, `alt` and `super`. `cmd`, `meta` and `win` alias `super`.
+- To enter a long text, or text the layout cannot type, put it on the clipboard and paste it: `screen-relay clipboard set --stdin < file.txt`, then `screen-relay key ctrl+v` (`super+v` on macOS). To read text an app copied, run `screen-relay clipboard get`.
 - A long `type` is sent in batches of at most 256 events. On failure, `data.applied` is the number of events the engine confirmed.
   - If the engine answered (`busy`, `invalid_input`, `unsupported_input`), resend only the rest of the text.
   - If the reply was lost (`timeout`, `unreachable`, `disconnected`), the last batch may already be on screen. Take a screenshot before you resend anything.
@@ -140,6 +141,7 @@ Exit codes: [CLI exit codes](references/cli.md#exit-codes).
 | `missing_command` | `run` was given no app (exit 2). | `screen-relay run -- APP`. |
 | `spawn_failed` | `run` could not start the app. | Check the app name and `screen-relay logs apps`. |
 | `unsupported_input` | The backend cannot produce a character or apply the input. | Use `screen-relay type` for layout-neutral text. |
+| `clipboard_unavailable` | The desktop has no clipboard the engine can use, or the app that owns it did not answer. | Use `screen-relay type` instead. `status --json` shows `capabilities.clipboard`. |
 | `unsupported_platform` | `up`, `down` or `run` ran on a platform other than Linux, macOS or Windows. | Run host commands on the Linux, macOS or Windows machine that shows the desktop. |
 | `invalid_config` | A config key or value is invalid. The message names the file and key. | Fix the file and start again. |
 | `invalid_input`, `invalid_option`, `unknown_command` | Usage error (exit 2). | Read the `next` command, usually `screen-relay help <command>`. |

@@ -4,7 +4,7 @@ import { request as httpsRequest, type RequestOptions } from 'node:https';
 import { plan, type Plan } from './transport.js';
 import {
   RelayError, networkError, responseError, baseUrl, integer, encodeInput, encodeInputBatch, comboEvents, textEvents,
-  batches, parseMessage, socketTarget, CLOSE_TAKEN, CLOSE_BUSY, MAX_INPUT_BATCH, MAX_INPUT_PENDING,
+  batches, parseMessage, socketTarget, CLOSE_TAKEN, CLOSE_BUSY, MAX_CLIPBOARD_BYTES, MAX_INPUT_BATCH, MAX_INPUT_PENDING,
   type InputEvent,
 } from '../protocol/index.js';
 
@@ -23,6 +23,7 @@ export interface Capabilities {
   screenshot: string; control: string; wayland: boolean; max_input_pending: number;
   input_endpoint: string; max_input_batch: number; tickets: string;
   cursor: boolean; audio: boolean; clipboard: boolean; resize: boolean; ime: boolean;
+  clipboard_endpoint?: string; max_clipboard_bytes?: number;
 }
 /** Sends each call as its own request. Coordinates are fractions of the screen from 0 to 1, and `screenshot` resolves to PNG bytes. */
 export interface Client {
@@ -35,6 +36,10 @@ export interface Client {
   key(...combos: string[]): Promise<InputResult>;
   type(text: string): Promise<InputResult>;
   input(events: InputEvent[]): Promise<InputResult>;
+  /** Reads the desktop clipboard as text; an empty string when it holds no text. */
+  clipboard(): Promise<string>;
+  /** Replaces the desktop clipboard with text of up to 256 KiB of UTF-8; an empty string clears it. */
+  setClipboard(text: string): Promise<void>;
 }
 /** A control connection that owns input until `close()`, or until a viewer takes control, which rejects with `control_taken`. `input` sends one raw event. */
 export interface Session {
@@ -261,6 +266,18 @@ export function createClient(options: ClientOptions = {}): Client {
     async input(events) {
       if (!Array.isArray(events) || !events.length) throw new RelayError('invalid_input', 'Input must be a nonempty array');
       return send(events.map(event => [event]));
+    },
+    async clipboard() {
+      const result = await request<{ text: unknown }>(server, '/clipboard');
+      if (typeof result?.text !== 'string') throw new RelayError('protocol_error', 'Invalid clipboard result');
+      return result.text;
+    },
+    async setClipboard(text) {
+      if (typeof text !== 'string' || text.includes('\0')) throw new RelayError('invalid_input', 'Clipboard text must be a string without NUL characters');
+      const body = new TextEncoder().encode(text);
+      if (body.length > MAX_CLIPBOARD_BYTES) throw new RelayError('invalid_input', `Clipboard text exceeds ${MAX_CLIPBOARD_BYTES / 1024} KiB`);
+      const result = await request<{ length: unknown }>(server, '/clipboard', false, body);
+      if (result?.length !== body.length) throw new RelayError('protocol_error', 'Invalid clipboard result');
     },
   };
 }
