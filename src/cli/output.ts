@@ -48,9 +48,15 @@ export function formatReady(info: Record<string, any>, args: Record<string, any>
   if (info.waylandDisplay) lines.push(row('Wayland display', info.waylandDisplay, args));
   if (info.resolution) lines.push(row('Resolution', `${info.resolution}${info.fps ? ` at ${info.fps} fps` : ''}`, args));
   lines.push(row('Logs', info.logs, args));
+  const loopback = info.bind === '127.0.0.1';
   if (info.public) {
-    if (!args['tls-cert']) lines.push(row('TLS proxy', `Forward ${info.url} to http://<HOST>:${info.port}`, args));
-  } else if (info.bind !== '127.0.0.1') {
+    if (!args['tls-cert']) {
+      const host = loopback ? info.bind : '<HOST>';
+      lines.push(row('TLS proxy', `Forward ${info.url} to http://${host}:${info.port}`, args));
+    } else if (loopback) {
+      lines.push(row('Listening', `${info.bind}:${info.port}; pass --bind <ADDR> to accept remote clients`, args));
+    }
+  } else if (!loopback) {
     lines.push(row('Listening', `${info.bind}:${info.port}; use a loopback port publish or SSH tunnel`, args));
   }
   lines.push(nextStep(background ? 'Stop it' : 'Stop it (or press Ctrl-C)', sessionCommand('down', String(info.name)), args));

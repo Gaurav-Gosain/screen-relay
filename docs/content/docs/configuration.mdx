@@ -85,7 +85,7 @@ nano ~/.config/screen-relay/config.yaml
 | `stream.bitrate.start` | `8M` | Same values as `min`. The stream adjusts between `min` and `max` from here. | None | `SCREEN_RELAY_BITRATE_START` |
 | `stream.bitrate.max` | `40M` | Same values as `min`. No lower than `start`. | None | `SCREEN_RELAY_BITRATE_MAX` |
 | `server.port` | `8080` | 1 to 65535 | `--port` | `SCREEN_RELAY_PORT` |
-| `server.bind` | `127.0.0.1`, or `0.0.0.0` when `server.public` is set | An address on the VM. Any other address makes screen-relay generate a token. | `--bind` | `SCREEN_RELAY_BIND` |
+| `server.bind` | `127.0.0.1` | Listen address on the VM. Setting `server.public` does not change it. Any address other than `127.0.0.1` generates a token. | `--bind` | `SCREEN_RELAY_BIND` |
 | `server.public` | unset | HTTPS origin with no path, query, or credentials, such as `https://desktop.example.com`. The engine accepts requests only for this host. A browser page must be served from this origin, a loopback page connecting to the same address, or an origin in `server.allow_origin`. | `--public` | `SCREEN_RELAY_PUBLIC` |
 | `server.allow_origin` | unset | Up to 16 comma-separated origins, as in [`--allow-origin`](/docs/remote-access#browser-origins): lowercase HTTPS origins for any host, or loopback HTTP origins such as `http://localhost:8081`. Requires a token. | `--allow-origin` | `SCREEN_RELAY_ALLOW_ORIGIN` |
 | `server.tls_cert` | unset | Path to a certificate file. Set with `tls_key`. | `--tls-cert` | `SCREEN_RELAY_TLS_CERT` |
@@ -99,7 +99,7 @@ Rules that span keys:
 - `stream.bitrate` needs `min <= start <= max`, including when you change one value.
 - `server.tls_cert` and `server.tls_key` must be set together.
 
-To reach the session from outside the VM, set `server.public` or serve it through a TLS proxy. In a container, publish the port to the host loopback. See [Remote access](/docs/remote-access) and [Docker](/docs/docker).
+For remote access, leave the engine on loopback when using an SSH tunnel or a proxy on the same VM. If a remote proxy needs to reach the engine, set `server.bind` to an address only that proxy can reach. In a container, publish the port to the host loopback. See [Remote access](/docs/remote-access) and [Docker](/docs/docker).
 
 ## Bad values
 

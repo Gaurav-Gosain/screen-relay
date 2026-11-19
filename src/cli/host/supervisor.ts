@@ -335,7 +335,7 @@ export class Session {
     }
     this.save({ backend, ...(backend === 'wayland' ? { waylandDisplay: this.env.WAYLAND_DISPLAY } : {}), display: this.env.DISPLAY, xauthority: this.env.XAUTHORITY ?? null, ownsDisplay: !attached, desktop, environment, resolution, fps: this.args.fps });
     if (desktopCommand.length) await waitSpawn(this.spawn('desktop', desktopCommand));
-    const bind = this.args.bind || (this.args.public ? '0.0.0.0' : '127.0.0.1');
+    const bind = this.args.bind || '127.0.0.1';
     let token: string | null = null;
     const engineCommand = [engine, '--bind', bind, '--port', String(this.args.port), '--fps', String(this.args.fps), '--bitrate-min', String(this.args.bitrateMin), '--bitrate-start', String(this.args.bitrateStart), '--bitrate-max', String(this.args.bitrateMax)];
     engineCommand.push('--backend', backend);

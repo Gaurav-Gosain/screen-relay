@@ -3,15 +3,15 @@ title: Remote access
 description: Open the viewer or control a session from another machine with an SSH tunnel, a public HTTPS URL, or native TLS.
 ---
 
-Open a session's viewer and run its client commands from another machine. A session listens on `127.0.0.1:8080` with no token, so only the VM can reach it by default. Anyone with a session's token can see and control its desktop. A session has one token and no user identity. To share less than that, create a [grant](#grants).
+Open a session's viewer and run its client commands from another machine. A session listens on `127.0.0.1:8080` by default, including when you pass `--public`. It stays on loopback unless you pass `--bind`, so a proxy or client that connects without a tunnel needs an address it can reach. Anyone with a session's token can see and control its desktop. A session has one token and no user identity. To share less than that, create a [grant](#grants).
 
 ## Choose a path
 
-| Path | Use it when | Token |
-| --- | --- | --- |
-| SSH tunnel | You have SSH access to the VM. | None |
-| Behind a TLS proxy | A cloud sandbox port, nginx, Caddy, or a tunnel forwards to the VM. | Required |
-| Native TLS | Clients connect straight to the VM and you have a certificate. | Required |
+| Path | Use it when | Listen address | Token |
+| --- | --- | --- | --- |
+| SSH tunnel | You have SSH access to the VM. | `127.0.0.1` (default) | None on Linux; required on macOS and Windows |
+| Behind a TLS proxy | A cloud sandbox port, nginx, Caddy, or a tunnel forwards to the VM. | `127.0.0.1` for a proxy on the VM; otherwise an address the proxy can use | Required |
+| Native TLS | Clients connect straight to the VM and you have a certificate. | An address clients can use, such as the VM's public address | Required |
 
 ## SSH tunnel
 
@@ -21,9 +21,9 @@ Open a session's viewer and run its client commands from another machine. A sess
    ssh -N -L 8080:127.0.0.1:8080 user@your-vm
    ```
 
-2. Open `http://127.0.0.1:8080` in your browser.
+2. Open `http://127.0.0.1:8080`, or the viewer link that `up` printed when the session has a token.
 
-The session stays on loopback, so the tunnel needs no token.
+The session stays on loopback, so the tunnel reaches it without a public URL. Linux sessions need no token; macOS and Windows sessions always have one.
 
 ## Behind a TLS proxy
 
@@ -33,7 +33,7 @@ The session stays on loopback, so the tunnel needs no token.
    screen-relay up -d --public https://desktop.example.com
    ```
 
-   `--public` takes a bare HTTPS origin. It makes the session listen on `0.0.0.0` unless you pass `--bind` and creates a token. Use the configured HTTPS URL for remote access. The built-in viewer still works on the same loopback address, including through an SSH tunnel. See [Browser origins](#browser-origins) for embedded viewers.
+   `--public` takes a bare HTTPS origin, sets the accepted public host, and creates a token. It does not change the listen address. Use the configured HTTPS URL for remote access. The built-in viewer still works on the same loopback address, including through an SSH tunnel. See [Browser origins](#browser-origins) for embedded viewers.
 
 2. Configure the proxy to:
    - forward every path with no prefix, including `/viewer.js`, `/stream`, and `/control` ([endpoints](/docs/protocol#endpoints))
@@ -43,7 +43,7 @@ The session stays on loopback, so the tunnel needs no token.
 
 3. Open the viewer link that `up` printed.
 
-Without `--tls-cert`, the engine serves plain HTTP and the proxy ends TLS. The proxy must be the only thing that can reach the port. The engine ignores `X-Forwarded-*` headers.
+Without `--tls-cert`, the engine serves plain HTTP and the proxy terminates TLS. A proxy on the same VM can use `127.0.0.1`. For a proxy that runs elsewhere, pass `--bind` with an address only the proxy can reach. Do not expose that port to clients. The engine ignores `X-Forwarded-*` headers.
 
 `up` prints a `TLS proxy` row that names the forwarding target.
 
@@ -52,12 +52,12 @@ Without `--tls-cert`, the engine serves plain HTTP and the proxy ends TLS. The p
 1. On the VM, start the session with your certificate:
 
    ```sh
-   screen-relay up -d --tls-cert fullchain.pem --tls-key key.pem --public https://desktop.example.com
+   screen-relay up -d --bind 0.0.0.0 --tls-cert fullchain.pem --tls-key key.pem --public https://desktop.example.com
    ```
 
 2. Open the viewer link that `up` printed.
 
-The engine serves HTTPS itself, prints no `TLS proxy` row, and speaks HTTP/1.1 only. Client commands on the VM accept the session's own certificate even when its host name does not match, so a self-signed certificate works there.
+The engine serves HTTPS itself, prints no `TLS proxy` row, and speaks HTTP/1.1 only. This example listens on all IPv4 interfaces. Pass a specific address to `--bind` if only one interface should accept connections. Client commands on the VM accept the session's own certificate even when its host name does not match, so a self-signed certificate works there.
 
 ## Browser origins
 
@@ -108,7 +108,7 @@ If the header is `null`, the client renders the app in a frame without an origin
 
 ## Tokens
 
-screen-relay creates a 64-character lowercase hex token (256 random bits) whenever the session listens anywhere other than `127.0.0.1`, or uses `--public` or `--allow-origin`.
+screen-relay creates a 64-character lowercase hex token (256 random bits) whenever the session listens anywhere other than `127.0.0.1`, uses `--public` or `--allow-origin`, or runs on macOS or Windows.
 
 - The token is stored in a `token` file in the session's state directory, readable only by its owner. `screen-relay status --json` shows the path as `tokenFile`.
 - `screen-relay status` hides the token unless you pass `--show-token`.

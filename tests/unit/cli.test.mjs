@@ -13,7 +13,7 @@ const directory = mkdtempSync(join(root, '.cli-test-'));
 after(() => rmSync(directory, { recursive: true, force: true }));
 const bundle = buildSync({
   stdin: {
-    contents: "export { commands } from './src/cli/commands.ts'; export { parseCommand } from './src/cli/parser.ts'; export { Session, resolveBackend } from './src/cli/host/supervisor.ts'; export { cmdRun } from './src/cli/host/session_commands.ts'; export { planSetup } from './src/cli/host/setup.ts';",
+    contents: "export { commands } from './src/cli/commands.ts'; export { parseCommand } from './src/cli/parser.ts'; export { Session, resolveBackend } from './src/cli/host/supervisor.ts'; export { cmdRun } from './src/cli/host/session_commands.ts'; export { formatReady } from './src/cli/output.ts'; export { planSetup } from './src/cli/host/setup.ts';",
     resolveDir: root,
   },
   bundle: true,
@@ -25,7 +25,7 @@ const bundle = buildSync({
 });
 const bundlePath = join(directory, 'parser.mjs');
 writeFileSync(bundlePath, bundle.outputFiles[0].contents);
-const { commands, parseCommand, Session, resolveBackend, cmdRun, planSetup } = await import(pathToFileURL(bundlePath).href);
+const { commands, parseCommand, Session, resolveBackend, cmdRun, formatReady, planSetup } = await import(pathToFileURL(bundlePath).href);
 
 test('every metadata example parses through the command parser', () => {
   for (const [name, command] of Object.entries(commands)) {
@@ -131,6 +131,67 @@ if (process.argv.includes('--help')) {
       else process.env[key] = previous[key];
     }
   }
+});
+
+test('--public keeps the engine on loopback unless a bind address is supplied', { skip: process.platform !== 'linux' }, async () => {
+  const engine = join(directory, 'relay-engine');
+  writeFileSync(engine, `#!/usr/bin/env node
+import { createServer } from 'node:http';
+import { readFileSync } from 'node:fs';
+
+if (process.argv.includes('--help')) {
+  console.log('Compiled backends: x11');
+} else {
+  const option = (name) => process.argv[process.argv.indexOf(name) + 1];
+  const token = readFileSync(option('--token-file'), 'utf8').trim();
+  const image = Buffer.from('iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNk+A8AAQUBAScY42YAAAAASUVORK5CYII=', 'base64');
+  const listener = createServer((req, res) => {
+    if (req.headers.authorization !== 'Bearer ' + token) { res.writeHead(401).end(); return; }
+    res.writeHead(200, { 'Content-Type': 'image/png' }).end(image);
+  });
+  listener.listen(Number(option('--port')), option('--bind'), () => {
+    console.log(JSON.stringify({ ready: true, pid: process.pid, bind: listener.address().address }));
+  });
+}
+`, { mode: 0o755 });
+  try {
+    for (const [bind, expected] of [[undefined, '127.0.0.1'], ['127.0.0.1', '127.0.0.1'], ['0.0.0.0', '0.0.0.0']]) {
+      const probe = createServer();
+      await new Promise((resolve) => probe.listen(0, '127.0.0.1', resolve));
+      const port = probe.address().port;
+      await new Promise((resolve, reject) => probe.close((error) => error ? reject(error) : resolve()));
+      const sessionDir = mkdtempSync(join(directory, 'proxy-'));
+      const session = new Session({ command: 'up', json: true, name: 'proxy', port, bind,
+        backend: 'x11', display: ':77', desktop: 'none', public: 'https://desk.example.com',
+        resolution: '1280x720', fps: 60, bitrateMin: 1000000, bitrateStart: 8000000, bitrateMax: 40000000, timeout: 5 }, sessionDir);
+      try {
+        const info = await session.start();
+        assert.equal(info.bind, expected);
+        const started = JSON.parse(readFileSync(join(sessionDir, 'engine.log'), 'utf8').trim());
+        assert.equal(started.bind, expected);
+        assert.equal(info.url, 'https://desk.example.com');
+        assert.equal((await fetch(`http://127.0.0.1:${port}/screenshot.png`)).status, 401);
+      } finally {
+        await session.cleanup();
+      }
+    }
+  } finally {
+    rmSync(engine, { force: true });
+  }
+});
+
+test('startup output points a public direct TLS session at --bind when it stays on loopback', () => {
+  const base = { name: 'desk', viewer: 'https://desk.example.com/#token=abc', logs: '/tmp/desk', url: 'https://desk.example.com', port: 8080, public: true };
+  const tls = { 'tls-cert': 'cert.pem' };
+  const loopback = formatReady({ ...base, bind: '127.0.0.1' }, tls);
+  assert.ok(loopback.includes('127.0.0.1:8080; pass --bind <ADDR> to accept remote clients'));
+  assert.ok(!loopback.includes('TLS proxy'));
+  assert.ok(!formatReady({ ...base, bind: '0.0.0.0' }, tls).includes('pass --bind'));
+  const proxy = formatReady({ ...base, bind: '127.0.0.1' }, {});
+  assert.ok(proxy.includes('Forward https://desk.example.com to http://127.0.0.1:8080'));
+  assert.ok(!proxy.includes('pass --bind'));
+  assert.ok(!formatReady({ ...base, public: false, url: 'http://127.0.0.1:8080', bind: '127.0.0.1' }, {}).includes('Listening'));
+  assert.ok(formatReady({ ...base, public: false, url: 'http://0.0.0.0:8080', bind: '0.0.0.0' }, {}).includes('use a loopback port publish or SSH tunnel'));
 });
 
 test('--json failures write one JSON line to stderr and nothing to stdout', () => {

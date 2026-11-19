@@ -34,8 +34,10 @@ The sandbox runs Ubuntu 26.04 on x86_64 as the `ubuntu` user, which has password
 4. Start screen-relay with your public URL:
 
    ```sh
-   sandbox exec screen-relay sh -c 'screen-relay up -d --public https://sb-xxxx.vercel.run'
+   sandbox exec screen-relay sh -c 'screen-relay up -d --bind 0.0.0.0 --public https://sb-xxxx.vercel.run'
    ```
+
+   `--bind 0.0.0.0` lets the Sandbox HTTPS proxy reach the engine. Use this bind inside the sandbox, not on a public VM with an exposed engine port.
 
    Open the viewer link that the command prints in your browser. It includes `#token=` and grants access to the desktop, so keep it secret.
 
@@ -100,7 +102,7 @@ Prerequisites:
 
    const start = await sandbox.runCommand({
      cmd: 'sh',
-     args: ['-c', 'screen-relay up -d --public "$1"', 'sh', sandbox.domain(8080)],
+     args: ['-c', 'screen-relay up -d --bind 0.0.0.0 --public "$1"', 'sh', sandbox.domain(8080)],
      stdout: process.stdout,
      stderr: process.stderr,
    });

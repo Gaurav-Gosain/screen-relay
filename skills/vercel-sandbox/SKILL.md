@@ -33,10 +33,10 @@ Run these steps in order. The port must be published before the first `up`, so t
 4. Start the session behind the public URL:
 
    ```sh
-   screen-relay up -d --public https://<id>.vercel.run
+   screen-relay up -d --bind 0.0.0.0 --public https://<id>.vercel.run
    ```
 
-   `--public` makes the session listen on `0.0.0.0` and creates a token. `/` must resolve to `https://<id>.vercel.run`, because the engine accepts only the `--public` host. Piped, `up -d` prints the viewer URL with its `#token=` fragment. Treat the whole URL as a secret, and share it only through the user's secret channel.
+   `--bind 0.0.0.0` lets the Sandbox HTTPS proxy reach the engine. `--public` creates a token and sets the host the proxy must send. Piped, `up -d` prints the viewer URL with its `#token=` fragment. Treat the whole URL as a secret, and share it only through the user's secret channel.
 
 5. Check the session:
 
