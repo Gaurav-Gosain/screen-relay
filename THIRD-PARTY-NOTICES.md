@@ -68,9 +68,9 @@ The files in `src/engine/backends/linux/wayland/protocols/` are licensed under t
 
 ## Libraries the engine links when it is built
 
-screen-relay does not distribute these. `screen-relay install` builds the engine on your machine against the copies your system provides.
+`screen-relay install` builds the engine on your machine against the copies your system provides.
 
-- x264: GPL-2.0-or-later. An engine binary that links x264 is covered by the GPL if you redistribute it.
+- x264: GPL-2.0-or-later. A prebuilt engine binary, like the one in the Vercel Sandbox image, links x264 and is distributed under GPL-3.0. See `LICENSES/GPL-3.0.txt`.
 - libwebsockets: MIT
 - zlib: zlib license
 - libX11, libXext, libXdamage, libXfixes, libXtst, libwayland-client, libxkbcommon: MIT and similar permissive licenses

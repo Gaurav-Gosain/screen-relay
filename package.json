@@ -17,7 +17,8 @@
     "packages.tsv",
     "Makefile",
     "src/engine",
-    "THIRD-PARTY-NOTICES.md"
+    "THIRD-PARTY-NOTICES.md",
+    "LICENSES"
   ],
   "exports": {
     ".": {
