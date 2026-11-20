@@ -1,8 +1,35 @@
 # screen-relay
 
-## 0.1.2
+## 0.1.3
 
 <!-- release:start -->
+
+### New Features
+
+- Added **scoped grants**: `POST /grants/watch` and `POST /grants/control` create a viewer credential with its own scope and lifetime, and `DELETE /grants/ID` revokes it and closes its connections. Grants replace the one-time viewer tickets from 0.1.2, and `POST /tickets` is gone (#74)
+- Added **viewer control handoff**: the first viewer gets control when input is idle, and other viewers can watch or choose **Take control** from an agent (#70)
+- Added **clipboard sync**: the viewer syncs text with the remote desktop while it holds control, and the CLI and SDK can read and set the remote clipboard (#71)
+
+### Improvements
+
+- **Browser origins** must now be listed for remote sessions. A session with `--public` accepts its own origin, loopback pages on the same address, and each origin in the new `--allow-origin` option, and never `Origin: null` (#76)
+- The **engine listens on loopback** unless `--bind` sets an address, including with `--public` (#73)
+- The **SDK** applies the same response body limit on every HTTP transport, and settles each request on completion, interruption, or its deadline (#78)
+- **Named Wayland sessions** clear the runtime state they manage when the session stops (#79)
+
+### Documentation
+
+- Updated the **MCP app example** to use scoped grants, with watch access by default and optional control (#75)
+- Guides store **client tokens** in owner-only files (#77)
+- Described screen-relay as for **humans and AI agents** (#69)
+
+### Contributors
+
+- @lahfir
+
+<!-- release:end -->
+
+## 0.1.2
 
 ### New Features
 
@@ -16,8 +43,6 @@
 
 - @joshuasoup
 - @lahfir
-
-<!-- release:end -->
 
 ## 0.1.1
 
