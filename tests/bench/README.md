@@ -9,3 +9,4 @@
 - The first frame is a keyframe. The other columns count the frames after it.
 - `lossless` is `yes` when every decoded frame equals the recorded frame byte for byte.
 - A second argument sets the zstd level: `./build/tiles-bench DIR 3`.
+- A third argument sets a whole scale factor: `./build/tiles-bench DIR 1 2`. The check then compares with a box-filtered frame.

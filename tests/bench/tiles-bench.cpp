@@ -26,6 +26,7 @@ static double cpuMs() { return 1000.0 * double(std::clock()) / CLOCKS_PER_SEC; }
 int main(int argc, char** argv) {
   if (argc < 2) { std::cerr << "usage: tiles-bench DIR [zstd-level]\n"; return 2; }
   const int level = argc > 2 ? std::stoi(argv[2]) : 1;
+  const int scale = argc > 3 ? std::stoi(argv[3]) : 1;  // whole scale factor, checked against a box filter
   std::vector<fs::path> files;
   for (const auto& e : fs::directory_iterator(argv[1])) if (e.path().extension() == ".rgb") files.push_back(e.path());
   std::sort(files.begin(), files.end());
@@ -41,7 +42,9 @@ int main(int argc, char** argv) {
     const size_t fsz = size_t(w) * h * 3;
     const size_t n = rgb.size() / fsz;
     if (n < 2) continue;
-    tiles::Encoder enc(w, h, level);
+    tiles::Encoder enc(w, h, level, 8 * 1024 * 1024 - 64, scale);
+    const int sw = enc.width(), sh = enc.height();
+    std::vector<uint8_t> want(size_t(sw) * sh * 3);
     std::vector<uint8_t> bgra(size_t(w) * h * 4, 255), out, client;
     int cw = 0, ch = 0;
     size_t total = 0, maxb = 0, copies = 0, keyb = 0, sends = 0;
@@ -79,7 +82,18 @@ int main(int argc, char** argv) {
       if (f == 0) { keyb = out.size(); continue; }
       ++sends; total += out.size(); maxb = std::max(maxb, out.size()); copies += st.copies;
       enc_ms += c1 - c0; dec_ms += c2 - c1;
-      if (std::memcmp(client.data(), fr, fsz) != 0) { std::cerr << stem << ": frame " << f << " differs\n"; ok = false; break; }
+      const uint8_t* expect = fr;
+      if (scale > 1) {
+        for (int by = 0; by < sh; ++by) for (int bx = 0; bx < sw; ++bx) {
+          unsigned s[3] = {0, 0, 0}, n = 0;
+          for (int y = by * scale; y < std::min(h, by * scale + scale); ++y)
+            for (int x = bx * scale; x < std::min(w, bx * scale + scale); ++x, ++n)
+              for (int c = 0; c < 3; ++c) s[c] += fr[(size_t(y) * w + x) * 3 + c];
+          for (int c = 0; c < 3; ++c) want[(size_t(by) * sw + bx) * 3 + c] = uint8_t((s[c] + n / 2) / n);
+        }
+        expect = want.data();
+      }
+      if (std::memcmp(client.data(), expect, size_t(sw) * sh * 3) != 0) { std::cerr << stem << ": frame " << f << " differs\n"; ok = false; break; }
     }
     all_ok &= ok;
     const double frames = double(n - 1);

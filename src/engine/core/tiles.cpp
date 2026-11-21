@@ -83,28 +83,64 @@ void Encoder::update(const FrameView& view, const std::vector<DamageRect>* damag
       std::memcpy(&src_[(size_t(y) * srcWidth_ + x0) * 4], view.data + size_t(y - view.y) * view.stride + size_t(x0 - view.x) * 4,
                   size_t(x1 - x0) * 4);
     const int k = scale_, bx0 = x0 / k, by0 = y0 / k, bx1 = (x1 + k - 1) / k, by1 = (y1 + k - 1) / k;
-    std::vector<uint32_t> sum(size_t(bx1 - bx0) * 4);
-    for (int by = by0; by < by1; ++by) {
-      std::fill(sum.begin(), sum.end(), 0);
-      const int sy0 = by * k, sy1 = std::min(srcHeight_, sy0 + k);
-      for (int sy = sy0; sy < sy1; ++sy) {
-        const uint8_t* s = &src_[(size_t(sy) * srcWidth_ + size_t(bx0) * k) * 4];
-        const int sx1 = std::min(srcWidth_, bx1 * k);
-        for (int sx = bx0 * k, i = 0; sx < sx1; ++sx, s += 4, i += (sx % k == 0) ? 4 : 0) {
-          sum[i] += s[0]; sum[i + 1] += s[1]; sum[i + 2] += s[2]; sum[i + 3] += s[3];
-        }
-      }
-      uint8_t* t = &cur_[(size_t(by) * width_ + bx0) * 4];
-      for (int bx = bx0, i = 0; bx < bx1; ++bx, i += 4, t += 4) {
-        const uint32_t n = uint32_t(sy1 - sy0) * uint32_t(std::min(srcWidth_, bx * k + k) - bx * k);
-        for (int c = 0; c < 4; ++c) t[c] = uint8_t((sum[i + c] + n / 2) / n);
-      }
-    }
+    filterBlocks(bx0, by0, bx1, by1);
     markDirty(bx0, by0, bx1 - bx0, by1 - by0);
   }
 }
 
 // Hash of the colour bytes of one row span; the alpha byte is ignored.
+// Averages the k x k blocks [bx0, bx1) x [by0, by1) of src_ into cur_.
+// Rounding is (sum + n / 2) / n for every byte, partial edge blocks included.
+void Encoder::filterBlocks(int bx0, int by0, int bx1, int by1) {
+  const int k = scale_;
+  const size_t sstride = size_t(srcWidth_) * 4;
+  // Whole blocks: the columns before a partial block at the right edge.
+  const int full_bx1 = std::min(bx1, srcWidth_ / k);
+  if (k == 2) {
+    for (int by = by0; by < by1; ++by) {
+      const int sy = by * 2;
+      const uint8_t* r0 = &src_[size_t(sy) * sstride];
+      const uint8_t* r1 = sy + 1 < srcHeight_ ? r0 + sstride : r0;  // a last odd row counts twice: same mean
+      uint8_t* t = &cur_[size_t(by) * width_ * 4];
+      for (int bx = bx0; bx < full_bx1; ++bx) {
+        const uint8_t* p = r0 + size_t(bx) * 8;
+        const uint8_t* q = r1 + size_t(bx) * 8;
+        uint8_t* o = t + size_t(bx) * 4;
+        for (int c = 0; c < 4; ++c) o[c] = uint8_t((unsigned(p[c]) + p[c + 4] + q[c] + q[c + 4] + 2) >> 2);
+      }
+      for (int bx = full_bx1; bx < bx1; ++bx) {  // right edge, one column
+        const uint8_t* p = r0 + size_t(bx) * 8;
+        const uint8_t* q = r1 + size_t(bx) * 8;
+        uint8_t* o = t + size_t(bx) * 4;
+        for (int c = 0; c < 4; ++c) o[c] = uint8_t((unsigned(p[c]) + q[c] + 1) >> 1);
+      }
+    }
+    return;
+  }
+  std::vector<uint32_t> sum(size_t(bx1 - bx0) * 4);
+  for (int by = by0; by < by1; ++by) {
+    std::fill(sum.begin(), sum.end(), 0);
+    const int sy0 = by * k, sy1 = std::min(srcHeight_, sy0 + k);
+    for (int sy = sy0; sy < sy1; ++sy) {
+      const uint8_t* s = &src_[size_t(sy) * sstride];
+      for (int bx = bx0; bx < bx1; ++bx) {
+        uint32_t* acc = &sum[size_t(bx - bx0) * 4];
+        const int sx1 = std::min(srcWidth_, bx * k + k);
+        for (int sx = bx * k; sx < sx1; ++sx) {
+          const uint8_t* p = s + size_t(sx) * 4;
+          acc[0] += p[0]; acc[1] += p[1]; acc[2] += p[2]; acc[3] += p[3];
+        }
+      }
+    }
+    uint8_t* t = &cur_[(size_t(by) * width_ + bx0) * 4];
+    for (int bx = bx0; bx < bx1; ++bx, t += 4) {
+      const uint32_t n = uint32_t(sy1 - sy0) * uint32_t(std::min(srcWidth_, bx * k + k) - bx * k);
+      const uint32_t* acc = &sum[size_t(bx - bx0) * 4];
+      for (int c = 0; c < 4; ++c) t[c] = uint8_t((acc[c] + n / 2) / n);
+    }
+  }
+}
+
 uint64_t Encoder::rowHash(const std::vector<uint8_t>& image, int y, int x0, int x1) const {
   const uint8_t* p = &image[(size_t(y) * width_ + x0) * 4];
   size_t n = size_t(x1 - x0) * 4;

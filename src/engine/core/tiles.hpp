@@ -70,6 +70,7 @@ class Encoder {
   void commit(const Op& op);
   uint64_t rowHash(const std::vector<uint8_t>& image, int y, int x0, int x1) const;
   void toRgb(const uint8_t* bgra_or_argb, uint8_t* rgb, int pixels) const;
+  void filterBlocks(int bx0, int by0, int bx1, int by1);
 
   int scale_, srcWidth_, srcHeight_;
   int width_, height_, level_;
