@@ -7,7 +7,9 @@
 #include <chrono>
 #include <cmath>
 #include <condition_variable>
+#include <cstdio>
 #include <cstring>
+#include <map>
 #include <memory>
 #include <mutex>
 #include <stdexcept>
@@ -72,11 +74,15 @@ class MacCapture;
 
 /// Holds the latest screen image, capture failure, and subscribed sources.
 struct CaptureState {
-  explicit CaptureState(Display selected) : display(selected) {
+  /// outWidth and outHeight, when nonzero, ask ScreenCaptureKit to scale the display to that size.
+  explicit CaptureState(Display selected, int outWidth = 0, int outHeight = 0)
+      : display(selected), outWidth(outWidth ? outWidth : selected.width), outHeight(outHeight ? outHeight : selected.height) {
     requireSurfaceSize(display.width, display.height);
-    image.resize(size_t(display.width) * display.height * 4);
+    requireSurfaceSize(this->outWidth, this->outHeight);
+    image.resize(size_t(this->outWidth) * this->outHeight * 4);
   }
   Display display;
+  int outWidth, outHeight;
   std::mutex mutex;
   std::condition_variable arrived;
   std::vector<uint8_t> image;
@@ -93,21 +99,23 @@ namespace {
 /// Shares one screen capture stream across capture sources.
 class SharedCapture {
  public:
-  static std::shared_ptr<SharedCapture> shared() {
+  /// One stream for each output size; 0 x 0 is the display size.
+  static std::shared_ptr<SharedCapture> shared(int outWidth = 0, int outHeight = 0) {
     static std::mutex mutex;
-    static std::weak_ptr<SharedCapture> current;
+    static std::map<std::pair<int, int>, std::weak_ptr<SharedCapture>> streams;
     std::lock_guard<std::mutex> lock(mutex);
+    auto& current = streams[{outWidth, outHeight}];
     auto existing = current.lock();
     if (!existing || existing->failed()) {
       if (existing) existing->stop();
-      existing = std::make_shared<SharedCapture>();
+      existing = std::make_shared<SharedCapture>(outWidth, outHeight);
       existing->start();
       current = existing;
     }
     return existing;
   }
 
-  SharedCapture() : state(std::make_shared<CaptureState>(findDisplay())) {}
+  SharedCapture(int outWidth, int outHeight) : state(std::make_shared<CaptureState>(findDisplay(), outWidth, outHeight)) {}
   ~SharedCapture() { stop(); }
   void stop() {
     @autoreleasepool {
@@ -141,8 +149,8 @@ class SharedCapture {
       lock.unlock();
       SCContentFilter* filter = [[SCContentFilter alloc] initWithDisplay:selected excludingWindows:@[]];
       SCStreamConfiguration* config = [[SCStreamConfiguration alloc] init];
-      config.width = state->display.width;
-      config.height = state->display.height;
+      config.width = state->outWidth;
+      config.height = state->outHeight;
       config.pixelFormat = kCVPixelFormatType_32BGRA;
       config.colorSpaceName = kCGColorSpaceSRGB;
       config.showsCursor = NO;
@@ -194,18 +202,48 @@ class SharedCapture {
 class MacCapture final : public CaptureSource {
  public:
   MacCapture() : shared(SharedCapture::shared()), state(shared->state),
-                 width(state->display.width), height(state->display.height), front(size_t(width) * height * 4) {
+                 width(state->outWidth), height(state->outHeight), front(size_t(width) * height * 4) {
     if (!ready.valid()) throw std::runtime_error("Creating the capture pipe failed");
     ready.signal();
-    std::unique_lock<std::mutex> lock(state->mutex);
-    state->sources.push_back(this);
-    if (!state->arrived.wait_for(lock, std::chrono::seconds(2), [&] { return state->haveFrame || !state->failure.empty(); })) {
-      state->sources.erase(std::remove(state->sources.begin(), state->sources.end(), this), state->sources.end());
+    subscribe(state);
+  }
+  /// Switches to a stream that ScreenCaptureKit scales to width x height (0 x 0 or the display size: unscaled).
+  bool scaleOutput(int w, int h) override {
+    const int fullWidth = state->display.width, fullHeight = state->display.height;
+    if (!w || !h || (w >= fullWidth && h >= fullHeight)) { w = 0; h = 0; }
+    if ((w ? w : fullWidth) == width && (h ? h : fullHeight) == height) return true;
+    try {
+      auto next = SharedCapture::shared(w, h);
+      subscribe(next->state);
+      {
+        std::lock_guard<std::mutex> lock(state->mutex);
+        state->sources.erase(std::remove(state->sources.begin(), state->sources.end(), this), state->sources.end());
+      }
+      std::lock_guard<std::mutex> lock(mutex);
+      shared = std::move(next);
+      state = shared->state;
+      width = state->outWidth; height = state->outHeight;
+      front.assign(size_t(width) * height * 4, 0);
+      pending.clear(); last.clear();
+      pendingFull = true; lastFull = true;
+      ready.signal();
+      return true;
+    } catch (const std::exception& error) {
+      std::fprintf(stderr, "capture: ScreenCaptureKit scaling to %dx%d failed: %s\n", w, h, error.what());
+      return false;
+    }
+  }
+  /// Adds this source to a capture state and waits for its first frame.
+  void subscribe(const std::shared_ptr<CaptureState>& target) {
+    std::unique_lock<std::mutex> lock(target->mutex);
+    target->sources.push_back(this);
+    if (!target->arrived.wait_for(lock, std::chrono::seconds(2), [&] { return target->haveFrame || !target->failure.empty(); })) {
+      target->sources.erase(std::remove(target->sources.begin(), target->sources.end(), this), target->sources.end());
       throw std::runtime_error("Timed out waiting for the first screen capture frame");
     }
-    if (!state->failure.empty()) {
-      const std::string error = state->failure;
-      state->sources.erase(std::remove(state->sources.begin(), state->sources.end(), this), state->sources.end());
+    if (!target->failure.empty()) {
+      const std::string error = target->failure;
+      target->sources.erase(std::remove(target->sources.begin(), target->sources.end(), this), target->sources.end());
       throw std::runtime_error(error);
     }
   }
@@ -312,27 +350,30 @@ void CaptureState::frame(CMSampleBufferRef sample) {
   NSNumber* status = info[SCStreamFrameInfoStatus];
   if (!status || (status.integerValue != SCFrameStatusComplete && status.integerValue != SCFrameStatusStarted)) return;
   CVPixelBufferRef buffer = CMSampleBufferGetImageBuffer(sample);
-  if (!buffer || CVPixelBufferGetWidth(buffer) != size_t(display.width) ||
-      CVPixelBufferGetHeight(buffer) != size_t(display.height) || CVPixelBufferGetPixelFormatType(buffer) != kCVPixelFormatType_32BGRA) {
+  if (!buffer || CVPixelBufferGetWidth(buffer) != size_t(outWidth) ||
+      CVPixelBufferGetHeight(buffer) != size_t(outHeight) || CVPixelBufferGetPixelFormatType(buffer) != kCVPixelFormatType_32BGRA) {
     checkDisplay();
     throw std::runtime_error("Screen capture returned an invalid image");
   }
   std::vector<DamageRect> rects;
-  bool full = !dirtyRects(info[SCStreamFrameInfoDirtyRects], display.width, display.height, rects);
+  // A scaled stream treats every frame as full damage: it is not confirmed which space its dirty rects use.
+  // The tiles encoder diffs the scaled frame, so only changed pixels go out anyway.
+  const bool scaled = outWidth != display.width || outHeight != display.height;
+  bool full = scaled || !dirtyRects(info[SCStreamFrameInfoDirtyRects], outWidth, outHeight, rects);
   for (const auto& rect : rects)
-    if (rect.x == 0 && rect.y == 0 && rect.width == display.width && rect.height == display.height) full = true;
+    if (rect.x == 0 && rect.y == 0 && rect.width == outWidth && rect.height == outHeight) full = true;
   PixelLock pixelsLock(buffer);
   const auto* pixels = static_cast<const uint8_t*>(CVPixelBufferGetBaseAddress(buffer));
   const size_t stride = CVPixelBufferGetBytesPerRow(buffer);
-  if (!pixels || stride < size_t(display.width) * 4)
+  if (!pixels || stride < size_t(outWidth) * 4)
     throw std::runtime_error("Screen capture returned an invalid image stride");
   std::lock_guard<std::mutex> lock(mutex);
   if (!failure.empty()) return;
   full = full || !haveFrame;
-  if (full) rects = {{0, 0, display.width, display.height}};
+  if (full) rects = {{0, 0, outWidth, outHeight}};
   for (const auto& rect : rects)
     for (int y = rect.y; y < rect.y + rect.height; ++y)
-      std::memcpy(image.data() + (size_t(y) * display.width + rect.x) * 4,
+      std::memcpy(image.data() + (size_t(y) * outWidth + rect.x) * 4,
                   pixels + size_t(y) * stride + size_t(rect.x) * 4, size_t(rect.width) * 4);
   pixelsLock.unlock();
   haveFrame = true;

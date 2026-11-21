@@ -281,6 +281,8 @@ struct CaptureEncoder::Impl {
       bool tiles_mode = false, continuing = false;
       unsigned tiles_inflight = 1;
       int tiles_scale = 1;
+      int out_width = width, out_height = height;  // tiles frame size from the source
+      bool source_scaled = false, rescale = false;
       uint64_t keys_done = 0;
       std::unique_ptr<tiles::Encoder> tiles_encoder;
       unsigned cascade_frames = 0;
@@ -305,11 +307,7 @@ struct CaptureEncoder::Impl {
             refresh_cursor = true;
             tiles_mode = session_tiles;
             tiles_inflight = session_inflight;
-            {
-              const int k = tiles::scaleFor(width, height, int(session_width), int(session_height));
-              if (k != tiles_scale) tiles_encoder.reset();
-              tiles_scale = k;
-            }
+            rescale = true;
             continuing = false;
             keys_done = key_requests;
           }
@@ -332,6 +330,29 @@ struct CaptureEncoder::Impl {
             publish_cursor(gen, std::move(*cursor)); cursor_published = true;
           }
         }
+        if (rescale) {
+          // Pick the tiles size for this session: the capture system scales when asked and able,
+          // else the encoder divides by a whole factor. Other sessions get full-size frames.
+          rescale = false;
+          unsigned want_w, want_h;
+          { std::lock_guard<std::mutex> lock(mutex); want_w = session_width; want_h = session_height; }
+          int k = 1, w = width, h = height;
+          bool scaled = false;
+          if (tiles_mode && want_w && want_h && settings.gpu_scale && (int(want_w) < width || int(want_h) < height)) {
+            // Fit inside the request, keep the aspect ratio, even sizes of at least 320x240.
+            const double f = std::min(double(want_w) / width, double(want_h) / height);
+            const int fw = std::max(min_frame_width, int(width * f) & ~1), fh = std::max(min_frame_height, int(height * f) & ~1);
+            scaled = source->scaleOutput(fw, fh);
+            if (scaled) { w = source->dimensions().first; h = source->dimensions().second; }
+          }
+          if (!scaled) {
+            if (source_scaled) source->scaleOutput(0, 0);
+            if (tiles_mode) k = tiles::scaleFor(width, height, int(want_w), int(want_h));
+          }
+          if (k != tiles_scale || w != out_width || h != out_height) tiles_encoder.reset();
+          source_scaled = scaled; tiles_scale = k; out_width = w; out_height = h;
+          dirty = true; force_idr = true;
+        }
         const auto now = Clock::now();
         const int64_t now_ns = ns(now.time_since_epoch());
         // A partial frame is finished at once, without a new capture and outside the frame budget.
@@ -340,13 +361,13 @@ struct CaptureEncoder::Impl {
           try {
             const bool key = force_idr || key_request;
             dirty = false;
-            if (!tiles_encoder) tiles_encoder = std::make_unique<tiles::Encoder>(width, height, 1, FlowControl::max_bytes - 64, tiles_scale);
+            if (!tiles_encoder) tiles_encoder = std::make_unique<tiles::Encoder>(out_width, out_height, 1, FlowControl::max_bytes - 64, tiles_scale);
             if (key || !continuing) {
               const FrameView view = source->captureChanged(key);
               require(view.data && view.width > 0 && view.height > 0 &&
-                      view.x >= 0 && view.y >= 0 && view.width <= width - view.x && view.height <= height - view.y &&
+                      view.x >= 0 && view.y >= 0 && view.width <= out_width - view.x && view.height <= out_height - view.y &&
                       view.stride >= view.width * 4 &&
-                      !(key && (view.width != width || view.height != height)) &&
+                      !(key && (view.width != out_width || view.height != out_height)) &&
                       view.format == r.format, "invalid capture frame");
               if (key) {
                 tiles_encoder->update(view, nullptr);

@@ -32,6 +32,8 @@ struct CaptureStats {
 struct CaptureSettings {
   unsigned fps;
   uint64_t min_bitrate, start_bitrate, max_bitrate;
+  /// For tiles size=WxH: let the capture system scale (macOS) instead of the integer box filter.
+  bool gpu_scale = false;
 };
 
 class CaptureEncoder {

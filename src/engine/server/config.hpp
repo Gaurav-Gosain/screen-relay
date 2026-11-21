@@ -16,6 +16,8 @@ struct Config {
   bool proxy = false, insecure_local = false, check = false;
   /// Allows /stream connections to ask for the lossless tiles codec with codec=tiles.
   bool tiles = false;
+  /// --scale gpu: tiles size=WxH asks the capture system to scale (macOS ScreenCaptureKit); box is the integer filter.
+  bool gpu_scale = false;
   std::vector<std::string> allowed_origins;
 };
 bool unsignedNumber(const std::string& text, uint64_t& value);

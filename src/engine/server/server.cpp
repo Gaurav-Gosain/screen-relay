@@ -71,7 +71,8 @@ Server::Stream::Stream(Server& server) : capture([this, &server](EncodedFrame&& 
   pending.push_back(std::move(frame));
   lws_cancel_service(server.context);
   return true;
-}, CaptureSettings{server.config.fps, server.config.bitrate_min, server.config.bitrate_start, server.config.bitrate_max},
+}, CaptureSettings{server.config.fps, server.config.bitrate_min, server.config.bitrate_start, server.config.bitrate_max,
+                   server.config.gpu_scale},
 backendFor(server.config.backend).capture, [this, &server](uint32_t gen, CursorImage&& cursor) {
   std::lock_guard<std::mutex> lock(mutex);
   if (!generation || gen != generation) return;
@@ -609,7 +610,7 @@ int callback(lws* wsi, lws_callback_reasons reason, void* user, void* in, size_t
             ",\"audio\":false,\"clipboard\":" + (s->clipboard.available() ? "true" : "false") +
             ",\"clipboard_endpoint\":\"/clipboard\",\"max_clipboard_bytes\":" + std::to_string(max_clipboard_bytes) +
             ",\"resize\":false,\"ime\":false" +
-            (s->config.tiles ? ",\"codecs\":[\"h264\",\"tiles\"],\"tiles_version\":1,\"tiles_max_inflight\":4,\"tiles_scale\":\"integer\"}" : ",\"codecs\":[\"h264\"]}");
+            (s->config.tiles ? ",\"codecs\":[\"h264\",\"tiles\"],\"tiles_version\":1,\"tiles_max_inflight\":4,\"tiles_scale\":\"integer\"" + std::string(s->config.gpu_scale ? ",\"tiles_scale_gpu\":true" : "") + "}" : ",\"codecs\":[\"h264\"]}");
         return jsonResponse(wsi, response, HTTP_STATUS_OK, json);
       }
       std::string file; const char* mime = nullptr; const char* headers = nullptr; int headerCount = 0;

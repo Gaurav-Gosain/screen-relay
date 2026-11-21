@@ -295,7 +295,7 @@ bool parseConfig(int argc, char** argv, Config& config) {
     if (option == "--help") {
       std::cout << "Usage: relay-engine [--bind ADDRESS] [--port PORT] [--viewer-dir DIR]\n"
                    "  [--backend NAME] [--output NAME] [--check]\n"
-                   "  [--fps N] [--bitrate-min BPS] [--bitrate-start BPS] [--bitrate-max BPS] [--tiles]\n"
+                   "  [--fps N] [--bitrate-min BPS] [--bitrate-start BPS] [--bitrate-max BPS] [--tiles [--scale gpu|box]]\n"
                    "  [--token-file FILE [--public-origin https://HOST[:PORT]]\n"
                    "    [--allow-origin ORIGIN[,...]]]\n"
                    "  [--tls-cert FILE --tls-key FILE | --behind-tls-proxy]\n"
@@ -309,6 +309,7 @@ bool parseConfig(int argc, char** argv, Config& config) {
                    "http://127.0.0.1[:PORT] for a page served on the machine itself.\n"
                    "--check initializes the backend and exits without starting capture or the server.\n"
                    "--tiles lets a /stream connection ask for the lossless tiles codec with codec=tiles.\n"
+                   "--scale gpu lets ScreenCaptureKit scale tiles frames for size=WxH (macOS). The default, box, divides by a whole factor.\n"
                    "Attach to DISPLAY using the caller's XAUTHORITY. Defaults: 127.0.0.1:8080, 60 fps,\n"
                    "1000000/8000000/40000000 bps.\n"
                 << "Compiled backends: " << backendNames() << '\n';
@@ -336,6 +337,10 @@ bool parseConfig(int argc, char** argv, Config& config) {
     else if (option == "--bitrate-start") config.bitrate_start = bitrate(value);
     else if (option == "--bitrate-max") config.bitrate_max = bitrate(value);
     else if (option == "--viewer-dir") config.viewer = value;
+    else if (option == "--scale") {
+      if (value != "gpu" && value != "box") throw std::runtime_error("--scale must be gpu or box");
+      config.gpu_scale = value == "gpu";
+    }
     else if (option == "--public-origin") {
       config.authority = value.rfind("https://", 0) == 0 ? httpsAuthority(value.substr(8)) : std::string{};
       if (config.authority.empty()) throw std::runtime_error("Public origin must be an HTTPS origin without path or credentials");

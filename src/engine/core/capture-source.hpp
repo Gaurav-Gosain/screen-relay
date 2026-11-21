@@ -51,6 +51,9 @@ class CaptureSource {
   virtual FrameView captureChanged(bool /*full*/) { return capture(); }
   /** Fills the pixel rectangles changed since the previous capture(); false means unknown, treat the whole frame as changed. */
   virtual bool changedRects(std::vector<DamageRect>& /*rects*/) { return false; }
+  /** Asks for frames scaled to width x height by the capture system itself (0 x 0 is full size).
+      Returns false when the source cannot scale; frames then stay full size. dimensions() gives the new size. */
+  virtual bool scaleOutput(int /*width*/, int /*height*/) { return false; }
   virtual bool cursorSupported() const { return false; }
   // Called on the source owner thread after draining events, even when video is paused.
   virtual std::optional<CursorImage> cursor(bool /*force*/) { return std::nullopt; }
