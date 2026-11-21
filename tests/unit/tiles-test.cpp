@@ -152,6 +152,7 @@ int main() {
       tiles::Stats st;
       assert(enc.encode(key, 1, out, &st));
       assert(out.size() <= 64 * 1024 || st.pixel_rects == 1);
+      assert(bool(out[1] & tiles::flag_partial) == enc.dirty());  // partial until the last frame
       c.take(out);
       key = false;
       ++frames;

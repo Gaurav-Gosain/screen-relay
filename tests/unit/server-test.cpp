@@ -191,6 +191,14 @@ int main() {
   assert(viewerTarget("/stream?codec=tiles").socket == Socket::stream && viewerTarget("/stream?codec=tiles").tiles);
   assert(viewerTarget("/stream?take=1&clipboard=1&codec=tiles").clipboard && viewerTarget("/stream?take=1&clipboard=1&codec=tiles").tiles);
   assert(!viewerTarget("/stream?view=1").tiles);
+  assert(viewerTarget("/stream?view=1&codec=tiles").tiles_inflight == 1);
+  assert(viewerTarget("/stream?view=1&codec=tiles&tiles_inflight=3").tiles_inflight == 3);
+  assert(viewerTarget("/stream?codec=tiles&tiles_inflight=4").socket == Socket::stream);
+  for (const char* text : {"/stream?view=1&codec=tiles&tiles_inflight=0", "/stream?view=1&codec=tiles&tiles_inflight=5",
+                           "/stream?view=1&tiles_inflight=2", "/stream?view=1&codec=tiles&tiles_inflight=22",
+                           "/stream?view=1&tiles_inflight=2&codec=tiles"}) {
+    assert(viewerTarget(text).socket == Socket::none);
+  }
   for (const char* text : {"/control?codec=tiles", "/stream?codec=tiles&view=1", "/stream?view=1&codec=h264", "/stream?view=1&codec=tiles&codec=tiles",
                            "/stream?view=0&codec=tiles", "/codec=tiles"}) {
     assert(viewerTarget(text).socket == Socket::none);

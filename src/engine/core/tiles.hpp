@@ -16,6 +16,9 @@ constexpr size_t header_bytes = 20;
 constexpr int tile = 64;
 
 enum OpKind : uint8_t { op_copy = 1, op_pixels = 2, op_fill = 3 };
+constexpr uint8_t flag_keyframe = 1, flag_partial = 4;
+/// Most frames a client may ask to have in flight (tiles_inflight=K).
+constexpr unsigned max_inflight = 4;
 
 struct Stats {
   size_t copies = 0, pixel_rects = 0, fills = 0;
@@ -46,7 +49,9 @@ class Encoder {
   bool dirty() const;
 
   /// Builds one type 8 payload. A keyframe resends everything onto a black
-  /// buffer. Returns false, and leaves out empty, when nothing changed.
+  /// buffer. Returns false, and leaves out empty, when nothing changed. When
+  /// the size limit leaves damage, the payload has the partial flag and
+  /// dirty() stays true: encode again, without a new capture, to finish.
   bool encode(bool keyframe, uint64_t pts_us, std::vector<uint8_t>& out, Stats* stats = nullptr);
 
 

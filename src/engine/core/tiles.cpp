@@ -298,7 +298,8 @@ bool Encoder::encode(bool keyframe, uint64_t pts_us, std::vector<uint8_t>& out, 
 
   out.reserve(header_bytes + ops.size() * 13 + blob_.size());
   out.push_back(format_version);
-  out.push_back(keyframe ? 1 : 0);
+  // Bit 2 (partial): the size limit left damage, and the next frames finish this capture.
+  out.push_back(uint8_t((keyframe ? flag_keyframe : 0) | (dirty() ? flag_partial : 0)));
   put16(out, unsigned(width_)); put16(out, unsigned(height_));
   put64(out, pts_us);
   put16(out, unsigned(ops.size()));
@@ -320,7 +321,7 @@ bool apply(std::vector<uint8_t>& rgb, int& width, int& height, const uint8_t* p,
   auto fail = [&](const char* why) { if (error) *error = why; return false; };
   if (size < header_bytes) return fail("short payload");
   if (p[0] != format_version) return fail("unknown version");
-  if (p[1] & ~1u) return fail("unknown flags");
+  if (p[1] & ~unsigned(flag_keyframe | flag_partial)) return fail("unknown flags");
   const bool key = p[1] & 1;
   const int w = int(get16(p + 2)), h = int(get16(p + 4));
   if (!w || !h) return fail("zero size");

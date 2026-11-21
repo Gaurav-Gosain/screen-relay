@@ -81,13 +81,13 @@ backendFor(server.config.backend).capture, [this, &server](uint32_t gen, CursorI
   const auto& cfg = server.config;
   flow.configure(cfg.bitrate_min, cfg.bitrate_start, cfg.bitrate_max, cfg.fps);
 }
-void Server::Stream::begin(lws* wsi, uint32_t gen, bool tiles) {
+void Server::Stream::begin(lws* wsi, uint32_t gen, bool tiles, unsigned tiles_inflight) {
   viewer = wsi;
 #ifdef __linux__
   configureStreamSocket(wsi);
 #endif
   { std::lock_guard<std::mutex> lock(mutex); generation = gen; }
-  capture.beginSession(gen, tiles);
+  capture.beginSession(gen, tiles, tiles_inflight);
 }
 void Server::Stream::end() {
   uint32_t old;
@@ -118,7 +118,7 @@ ConnectionPlan Server::planConnection(Socket socket, bool grant) {
   }
   return connectionPlan(socket, count, input_viewer != nullptr, control != nullptr, grantCount, grant, inputViewerHasGrant);
 }
-int Server::startStream(lws* wsi, Socket socket, const ConnectionPlan& plan, bool clipboardNotices, bool tiles) {
+int Server::startStream(lws* wsi, Socket socket, const ConnectionPlan& plan, bool clipboardNotices, bool tiles, unsigned tiles_inflight) {
   auto slot = std::find_if(streams.begin(), streams.end(), [](const auto& stream) { return !stream || !stream->viewer; });
   if (slot != streams.end() && !*slot) {
     auto stream = std::make_unique<Stream>(*this);
@@ -143,7 +143,7 @@ int Server::startStream(lws* wsi, Socket socket, const ConnectionPlan& plan, boo
   auto& stream = **slot;
   stream.width = width; stream.height = height;
   stream.clipboard_notices = clipboardNotices;
-  stream.begin(wsi, ++nextGeneration, tiles);
+  stream.begin(wsi, ++nextGeneration, tiles, tiles_inflight);
   stream.updateFlow(config.proxy);
   return 0;
 }
@@ -609,7 +609,7 @@ int callback(lws* wsi, lws_callback_reasons reason, void* user, void* in, size_t
             ",\"audio\":false,\"clipboard\":" + (s->clipboard.available() ? "true" : "false") +
             ",\"clipboard_endpoint\":\"/clipboard\",\"max_clipboard_bytes\":" + std::to_string(max_clipboard_bytes) +
             ",\"resize\":false,\"ime\":false" +
-            (s->config.tiles ? ",\"codecs\":[\"h264\",\"tiles\"],\"tiles_version\":1}" : ",\"codecs\":[\"h264\"]}");
+            (s->config.tiles ? ",\"codecs\":[\"h264\",\"tiles\"],\"tiles_version\":1,\"tiles_max_inflight\":4}" : ",\"codecs\":[\"h264\"]}");
         return jsonResponse(wsi, response, HTTP_STATUS_OK, json);
       }
       std::string file; const char* mime = nullptr; const char* headers = nullptr; int headerCount = 0;
@@ -705,7 +705,7 @@ int callback(lws* wsi, lws_callback_reasons reason, void* user, void* in, size_t
         response->grant_id = grant->id;
       }
       if (!s->planConnection(parsed.socket, response->grant_id != 0).open && parsed.socket != Socket::control) return 1;
-      response->socket = parsed.socket; response->clipboard = parsed.clipboard; response->tiles = parsed.tiles;
+      response->socket = parsed.socket; response->clipboard = parsed.clipboard; response->tiles = parsed.tiles; response->tiles_inflight = parsed.tiles_inflight;
       return 0;
     }
     case LWS_CALLBACK_ESTABLISHED: {
@@ -733,7 +733,7 @@ int callback(lws* wsi, lws_callback_reasons reason, void* user, void* in, size_t
         s->control_ready = true; lws_callback_on_writable(wsi);
         return 0;
       }
-      return s->startStream(wsi, socket, plan, response->clipboard, response->tiles);
+      return s->startStream(wsi, socket, plan, response->clipboard, response->tiles, response->tiles_inflight);
     }
     case LWS_CALLBACK_RECEIVE: {
       if (s->closing.count(wsi)) return 0;

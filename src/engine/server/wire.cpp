@@ -89,6 +89,17 @@ Target plainTarget(const std::string& target) {
 Target viewerTarget(const std::string& whole) {
   std::string target = whole;
   bool tiles = false;
+  unsigned inflight = 1;
+  bool inflight_given = false;
+  // Optional last parameter, right after codec=tiles: tiles_inflight=K with K from 1 to 4.
+  const std::string key = "&tiles_inflight=";
+  const auto at = target.rfind(key);
+  if (at != std::string::npos) {
+    if (at + key.size() + 1 != target.size() || target.back() < '1' || target.back() > '4') return {};
+    inflight = unsigned(target.back() - '0');
+    inflight_given = true;
+    target.resize(at);
+  }
   for (const char* suffix : {"&codec=tiles", "?codec=tiles"}) {
     const std::string s(suffix);
     if (target.size() > s.size() && target.compare(target.size() - s.size(), s.size(), s) == 0) {
@@ -97,10 +108,12 @@ Target viewerTarget(const std::string& whole) {
       break;
     }
   }
+  if (inflight_given && !tiles) return {};
   Target t = plainTarget(target);
   if (!tiles) return t;
   if (t.socket == Socket::control || t.socket == Socket::none) return {};
   t.tiles = true;
+  t.tiles_inflight = inflight;
   return t;
 }
 ConnectionPlan connectionPlan(Socket socket, size_t viewerCount, bool streamOwnsInput, bool controlOpen,

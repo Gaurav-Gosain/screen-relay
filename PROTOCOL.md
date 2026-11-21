@@ -120,14 +120,15 @@ The tiles codec sends exact pixels. It suits text, terminals and code editors, w
 - Start the engine with `--tiles`. Then `GET /capabilities` has `"codecs":["h264","tiles"]` and `"tiles_version":1`.
 - Add `codec=tiles` as the last query parameter of a `/stream` URL, for example `/stream?view=1&codec=tiles`. Without `--tiles`, the handshake fails.
 - Other connections keep H.264.
-- The engine keeps one tiles frame in flight. It collects damage until the ACK arrives, then sends one frame for all of it. A slow client gets fewer frames, not older frames.
+- Add `&tiles_inflight=K` after `codec=tiles` to allow K frames in flight, K from 1 to 4. The default is 1. `/capabilities` shows `"tiles_max_inflight":4`.
+- The engine keeps the allowed number of tiles frames in flight. It collects damage until the ACK arrives, then sends one frame for all of it. A slow client gets fewer frames, not older frames.
 
 A type 8 payload, all integers big-endian:
 
 | Offset | Size | Field |
 | ---: | ---: | --- |
 | 0 | 1 | Format version: 1 |
-| 1 | 1 | Flags: bit 0 is a keyframe |
+| 1 | 1 | Flags: bit 0 is a keyframe, bit 2 is partial |
 | 2 | 4 | Desktop width and height, 2 bytes each |
 | 6 | 8 | Capture time in microseconds |
 | 14 | 2 | Op count |
@@ -143,6 +144,6 @@ A type 8 payload, all integers big-endian:
 - The pixel blob is one zstd frame. It decodes to the pixel bytes of all pixels ops, in op order. It is empty when there are no pixels ops.
 - Apply the ops in order. On a keyframe, first make a black buffer of the given size.
 - Each rectangle is inside the desktop and is not empty. Reject a frame that breaks a rule and send type 9.
-- When the damage does not fit in one 8 MiB message, the next frames carry the rest.
+- When the damage of one capture does not fit in one 8 MiB message, the engine sends it in several frames at once. Every frame except the last has the partial bit. Apply a partial frame, and draw after the next frame without the bit.
 
 The reference decoder is `relay::tiles::apply` in `src/engine/core/tiles.cpp`. A test client is `tests/e2e/tiles-client.mjs`.

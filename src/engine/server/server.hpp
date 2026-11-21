@@ -30,6 +30,7 @@ struct HttpResponse {
   Socket socket;
   uint64_t upload_expected, grant_id;
   bool image_headers, clipboard, input_reply, input_headers, closing, tiles;
+  unsigned tiles_inflight;
   unsigned reply_status, image_status;
   const char* image_type;
 };
@@ -69,7 +70,7 @@ struct Server {
     std::vector<uint8_t> received;
     CaptureEncoder capture;
     explicit Stream(Server& server);
-    void begin(lws* wsi, uint32_t gen, bool tiles);
+    void begin(lws* wsi, uint32_t gen, bool tiles, unsigned tiles_inflight);
     void end();
     void updateFlow(bool proxy);
     bool timedOut();
@@ -101,7 +102,7 @@ struct Server {
   explicit Server(Config settings);
   Stream* streamFor(lws* wsi);
   ConnectionPlan planConnection(Socket socket, bool grant);
-  int startStream(lws* wsi, Socket socket, const ConnectionPlan& plan, bool clipboardNotices, bool tiles);
+  int startStream(lws* wsi, Socket socket, const ConnectionPlan& plan, bool clipboardNotices, bool tiles, unsigned tiles_inflight);
   void release();
   void endStream(lws* wsi);
   void endControl();

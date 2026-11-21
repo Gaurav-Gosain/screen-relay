@@ -1,7 +1,7 @@
 // Minimal tiles client for tests: connects to /stream?view=1&codec=tiles,
 // applies type 8 frames to an RGB buffer, ACKs each one, and can compare the
 // buffer with /screenshot.png. Usage:
-//   node tests/e2e/tiles-client.mjs http://127.0.0.1:8080 SECONDS [--keyframe-at S] [--ack-delay MS] [--check]
+//   node tests/e2e/tiles-client.mjs http://127.0.0.1:8080 SECONDS [--keyframe-at S] [--ack-delay MS] [--inflight K] [--check]
 // Prints one JSON line with frames, bytes, latency and the check result.
 import zlib from 'node:zlib';
 
@@ -11,6 +11,8 @@ const check = rest.includes('--check');
 const keyAt = rest.includes('--keyframe-at') ? Number(rest[rest.indexOf('--keyframe-at') + 1]) : -1;
 // --ack-delay MS holds each ACK back, like a slow link or a slow terminal.
 const ackDelay = rest.includes('--ack-delay') ? Number(rest[rest.indexOf('--ack-delay') + 1]) : 0;
+// --inflight K asks the engine for K frames in flight (tiles_inflight=K).
+const inflight = rest.includes('--inflight') ? Number(rest[rest.indexOf('--inflight') + 1]) : 1;
 const token = process.env.SCREEN_RELAY_TOKEN;
 
 const u16 = (b, o) => (b[o] << 8) | b[o + 1];
@@ -30,6 +32,7 @@ function header(type, gen, seq, payload = new Uint8Array(0)) {
 let rgb = null, W = 0, H = 0;
 export function apply(p) {
   if (p[0] !== 1) throw new Error('version');
+  if (p[1] & ~5) throw new Error('flags');
   const key = p[1] & 1, w = u16(p, 2), h = u16(p, 4), pts = u64(p, 6), count = u16(p, 14), blobLen = u32(p, 16);
   if (key) { W = w; H = h; rgb = new Uint8Array(w * h * 3); }
   else if (w !== W || h !== H) throw new Error('size without keyframe');
@@ -83,7 +86,7 @@ function decodePng(buf) {
 }
 
 const stats = { frames: 0, keyframes: 0, bytes: 0, copies: 0, maxBytes: 0, lat: [], errors: [] };
-const ws = new WebSocket(base.replace(/^http/, 'ws') + '/stream?view=1&codec=tiles', token ? ['nsl1', 'bearer.' + token] : ['nsl1']);
+const ws = new WebSocket(base.replace(/^http/, 'ws') + '/stream?view=1&codec=tiles' + (inflight > 1 ? '&tiles_inflight=' + inflight : ''), token ? ['nsl1', 'bearer.' + token] : ['nsl1']);
 ws.binaryType = 'arraybuffer';
 let gen = 0, keySent = false;
 const started = Date.now();

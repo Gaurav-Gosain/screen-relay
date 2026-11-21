@@ -29,6 +29,7 @@ struct Target {
   Socket socket = Socket::none;
   bool clipboard = false;
   bool tiles = false;
+  unsigned tiles_inflight = 1;  ///< tiles_inflight=K after codec=tiles, 1 to 4
 };
 /** Classifies /stream?view=1, /stream, /stream?take=1, /stream?clipboard=1, /stream?take=1&clipboard=1, and /control; any other target opens Socket::none.
     A /stream target may end with codec=tiles (as its last parameter) to ask for the tiles codec. */
