@@ -194,6 +194,18 @@ int main() {
   assert(viewerTarget("/stream?view=1&codec=tiles").tiles_inflight == 1);
   assert(viewerTarget("/stream?view=1&codec=tiles&tiles_inflight=3").tiles_inflight == 3);
   assert(viewerTarget("/stream?codec=tiles&tiles_inflight=4").socket == Socket::stream);
+  {
+    const auto t = viewerTarget("/stream?view=1&codec=tiles&tiles_inflight=2&size=660x418");
+    assert(t.socket == Socket::watch && t.tiles && t.tiles_inflight == 2 && t.tiles_width == 660 && t.tiles_height == 418);
+    const auto u = viewerTarget("/stream?codec=tiles&size=1320x880&tiles_inflight=1");
+    assert(u.socket == Socket::stream && u.tiles_width == 1320 && u.tiles_height == 880);
+    assert(viewerTarget("/stream?view=1&codec=tiles").tiles_width == 0);
+  }
+  for (const char* text : {"/stream?view=1&size=10x10", "/stream?view=1&codec=tiles&size=0x10", "/stream?view=1&codec=tiles&size=10x",
+                           "/stream?view=1&codec=tiles&size=65536x10", "/stream?view=1&codec=tiles&size=10x10&size=10x10",
+                           "/stream?view=1&codec=tiles&size=-1x10", "/stream?view=1&codec=tiles&size=010x10", "/stream?view=1&codec=tilesx"}) {
+    assert(viewerTarget(text).socket == Socket::none);
+  }
   for (const char* text : {"/stream?view=1&codec=tiles&tiles_inflight=0", "/stream?view=1&codec=tiles&tiles_inflight=5",
                            "/stream?view=1&tiles_inflight=2", "/stream?view=1&codec=tiles&tiles_inflight=22",
                            "/stream?view=1&tiles_inflight=2&codec=tiles"}) {

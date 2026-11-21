@@ -195,5 +195,66 @@ int main() {
     std::vector<uint8_t> delta(out); delta[1] = 0;  // not a keyframe on an empty client
     assert(bad(delta));
   }
+  // Whole-factor scaling: the client gets the k x k block means, and even scrolls stay copies at k = 2.
+  {
+    assert(tiles::scaleFor(3024, 1964, 1320, 858) == 2 && tiles::scaleFor(1320, 858, 1320, 858) == 1);
+    assert(tiles::scaleFor(1000, 700, 2000, 2000) == 1 && tiles::scaleFor(5120, 2880, 1280, 700) == 4 && tiles::scaleFor(100, 100, 0, 0) == 1);
+    Desk d(1001, 701);  // odd sizes: partial blocks on the right and bottom
+    auto reference = [&](int k) {
+      const int w = (d.w + k - 1) / k, h = (d.h + k - 1) / k;
+      std::vector<uint8_t> out(size_t(w) * h * 3);
+      for (int by = 0; by < h; ++by) for (int bx = 0; bx < w; ++bx) {
+        unsigned s[3] = {0, 0, 0}, n = 0;
+        for (int y = by * k; y < std::min(d.h, by * k + k); ++y) for (int x = bx * k; x < std::min(d.w, bx * k + k); ++x, ++n) {
+          const uint8_t* p = &d.bgra[(size_t(y) * d.w + x) * 4];
+          s[0] += p[2]; s[1] += p[1]; s[2] += p[0];
+        }
+        for (int c = 0; c < 3; ++c) out[(size_t(by) * w + bx) * 3 + c] = uint8_t((s[c] + n / 2) / n);
+      }
+      return out;
+    };
+    auto band = [&](int pos) {
+      for (int y = 0; y < d.h; ++y) {
+        const int src = y + pos + 4000, line = src / 24, row = src % 24;
+        Desk one(d.w, 24);
+        paintText(one, 0, 24, line, 24);
+        std::memcpy(&d.bgra[size_t(y) * d.w * 4], &one.bgra[size_t(row) * d.w * 4], size_t(d.w) * 4);
+      }
+    };
+    for (int k : {2, 3}) {
+      tiles::Encoder enc(d.w, d.h, 1, 8 * 1024 * 1024 - 64, k);
+      assert(enc.width() == (d.w + k - 1) / k && enc.height() == (d.h + k - 1) / k);
+      Client c;
+      std::vector<uint8_t> out;
+      band(0);
+      enc.update(d.view(), nullptr); enc.encode(true, 1, out); c.take(out);
+      assert(c.w == enc.width() && c.rgb == reference(k));
+      int pos = 0;
+      size_t copies = 0;
+      for (int step : {2 * k, 6 * k, -4 * k, 5}) {
+        pos += step;
+        band(pos);
+        std::vector<DamageRect> dmg{{0, 0, d.w, d.h}};
+        enc.update(d.view(), &dmg);
+        tiles::Stats st;
+        assert(enc.encode(false, 2, out, &st));
+        c.take(out);
+        assert(c.rgb == reference(k));
+        if (step % k == 0) { assert(st.scroll_dy == step / k); copies += st.copies; }
+      }
+      assert(copies >= 3);
+    }
+    // Damage that covers part of a block still updates the whole block.
+    tiles::Encoder enc(d.w, d.h, 1, 8 * 1024 * 1024 - 64, 2);
+    Client c;
+    std::vector<uint8_t> out;
+    enc.update(d.view(), nullptr); enc.encode(true, 1, out); c.take(out);
+    d.set(501, 301, 255, 0, 0);
+    std::vector<DamageRect> one{{501, 301, 1, 1}};
+    FrameView part{&d.bgra[(size_t(301) * d.w + 501) * 4], d.w * 4, 1, 1, PixelFormat::BGRA, 501, 301};
+    enc.update(part, &one);
+    assert(enc.encode(false, 2, out)); c.take(out);
+    assert(c.rgb == reference(2));
+  }
   std::cout << "tiles checks passed\n";
 }

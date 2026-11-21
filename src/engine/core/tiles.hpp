@@ -31,12 +31,16 @@ struct Stats {
 /// move the client to the current desktop.
 class Encoder {
  public:
-  /// level is the zstd level; max_payload caps one message.
-  Encoder(int width, int height, int level = 1, size_t max_payload = 8 * 1024 * 1024 - 64);
+  /// width and height are the desktop size. level is the zstd level;
+  /// max_payload caps one message. With scale k > 1 the encoder sends the
+  /// desktop at 1/k size: each pixel is the mean of a k x k block (partial
+  /// blocks at the right and bottom edges average the pixels they have).
+  Encoder(int width, int height, int level = 1, size_t max_payload = 8 * 1024 * 1024 - 64, int scale = 1);
   ~Encoder();
   Encoder(const Encoder&) = delete;
   Encoder& operator=(const Encoder&) = delete;
 
+  /// The size the client sees, after scaling.
   int width() const { return width_; }
   int height() const { return height_; }
 
@@ -67,7 +71,9 @@ class Encoder {
   uint64_t rowHash(const std::vector<uint8_t>& image, int y, int x0, int x1) const;
   void toRgb(const uint8_t* bgra_or_argb, uint8_t* rgb, int pixels) const;
 
+  int scale_, srcWidth_, srcHeight_;
   int width_, height_, level_;
+  std::vector<uint8_t> src_;  // full-size desktop, only when scale_ > 1
   size_t max_payload_;
   int tiles_x_, tiles_y_;
   // cur_ and sent_ hold 4-byte pixels in the capture format; the alpha byte is not compared.
@@ -84,6 +90,10 @@ class Encoder {
   std::vector<uint8_t> raw_, blob_;
   void* cctx_ = nullptr;
 };
+
+/// The largest whole factor k with width/k >= max_width and height/k >= max_height, at least 1.
+/// A whole factor keeps a scroll of a multiple of k pixels an exact copy after scaling.
+int scaleFor(int width, int height, int max_width, int max_height);
 
 /// Applies one type 8 payload to an RGB buffer. A keyframe resizes and clears
 /// the buffer first. Returns false and sets error on a malformed payload; the

@@ -46,7 +46,9 @@ class CaptureEncoder {
   CaptureEncoder& operator=(const CaptureEncoder&) = delete;
   bool start(std::string& error);
   /** Starts a session; tiles selects the lossless tiles codec in place of H.264. */
-  void beginSession(uint32_t generation, bool tiles = false, unsigned tiles_inflight = 1);
+  /** tiles_width and tiles_height, when nonzero, ask for the desktop scaled by the largest whole factor that still covers them. */
+  void beginSession(uint32_t generation, bool tiles = false, unsigned tiles_inflight = 1,
+                    unsigned tiles_width = 0, unsigned tiles_height = 0);
   /** Makes the next tiles frame of this session a keyframe. */
   void requestKeyframe(uint32_t generation);
   void endSession(uint32_t generation);

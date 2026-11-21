@@ -87,33 +87,43 @@ Target plainTarget(const std::string& target) {
 }
 }  // namespace
 Target viewerTarget(const std::string& whole) {
-  std::string target = whole;
-  bool tiles = false;
-  unsigned inflight = 1;
-  bool inflight_given = false;
-  // Optional last parameter, right after codec=tiles: tiles_inflight=K with K from 1 to 4.
-  const std::string key = "&tiles_inflight=";
-  const auto at = target.rfind(key);
-  if (at != std::string::npos) {
-    if (at + key.size() + 1 != target.size() || target.back() < '1' || target.back() > '4') return {};
-    inflight = unsigned(target.back() - '0');
-    inflight_given = true;
-    target.resize(at);
+  // codec=tiles may be followed by its own parameters, in any order, each once:
+  // tiles_inflight=K (K from 1 to 4) and size=WxH (1 to 65535 each).
+  size_t at = std::string::npos;
+  for (const char* key : {"?codec=tiles", "&codec=tiles"}) {
+    const auto p = whole.find(key);
+    if (p != std::string::npos && (p + 12 == whole.size() || whole[p + 12] == '&')) { at = p; break; }
   }
-  for (const char* suffix : {"&codec=tiles", "?codec=tiles"}) {
-    const std::string s(suffix);
-    if (target.size() > s.size() && target.compare(target.size() - s.size(), s.size(), s) == 0) {
-      target.resize(target.size() - s.size());
-      tiles = true;
-      break;
-    }
+  if (at == std::string::npos) {
+    if (whole.find("tiles_inflight=") != std::string::npos || whole.find("size=") != std::string::npos) return {};
+    return plainTarget(whole);
   }
-  if (inflight_given && !tiles) return {};
-  Target t = plainTarget(target);
-  if (!tiles) return t;
+  Target t = plainTarget(whole.substr(0, at));
   if (t.socket == Socket::control || t.socket == Socket::none) return {};
   t.tiles = true;
-  t.tiles_inflight = inflight;
+  bool inflight_seen = false, size_seen = false;
+  size_t pos = at + 12;
+  while (pos < whole.size()) {
+    const size_t next = whole.find('&', pos + 1);
+    const std::string param = whole.substr(pos + 1, next == std::string::npos ? std::string::npos : next - pos - 1);
+    pos = next == std::string::npos ? whole.size() : next;
+    if (param.rfind("tiles_inflight=", 0) == 0 && !inflight_seen && param.size() == 16 && param[15] >= '1' && param[15] <= '4') {
+      t.tiles_inflight = unsigned(param[15] - '0');
+      inflight_seen = true;
+    } else if (param.rfind("size=", 0) == 0 && !size_seen) {
+      const std::string v = param.substr(5);
+      const auto x = v.find('x');
+      auto number = [](const std::string& s, unsigned& out) {
+        if (s.empty() || s.size() > 5 || s.find_first_not_of("0123456789") != std::string::npos || s[0] == '0') return false;
+        out = unsigned(std::stoul(s));
+        return out >= 1 && out <= 65535;
+      };
+      if (x == std::string::npos || !number(v.substr(0, x), t.tiles_width) || !number(v.substr(x + 1), t.tiles_height)) return {};
+      size_seen = true;
+    } else {
+      return {};
+    }
+  }
   return t;
 }
 ConnectionPlan connectionPlan(Socket socket, size_t viewerCount, bool streamOwnsInput, bool controlOpen,

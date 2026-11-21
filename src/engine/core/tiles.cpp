@@ -28,13 +28,20 @@ void copyRect(std::vector<uint8_t>& img, int width, int px, int sx, int sy, int 
 }
 }  // namespace
 
-Encoder::Encoder(int width, int height, int level, size_t max_payload)
-    : width_(width), height_(height), level_(level), max_payload_(max_payload),
-      tiles_x_((width + tile - 1) / tile), tiles_y_((height + tile - 1) / tile),
-      cur_(size_t(width) * height * 4), sent_(size_t(width) * height * 4),
-      dirty_(size_t(tiles_x_) * tiles_y_, 1), clean_(size_t(height), 0),
-      sentHash_(size_t(height), 0), hashOk_(size_t(height), 0) {
-  if (width <= 0 || height <= 0 || width > 65535 || height > 65535) throw std::runtime_error("tiles: bad size");
+int scaleFor(int width, int height, int max_width, int max_height) {
+  if (max_width <= 0 || max_height <= 0) return 1;
+  return std::max(1, std::min(width / max_width, height / max_height));
+}
+
+Encoder::Encoder(int width, int height, int level, size_t max_payload, int scale)
+    : scale_(std::max(1, scale)), srcWidth_(width), srcHeight_(height),
+      width_((width + scale_ - 1) / scale_), height_((height + scale_ - 1) / scale_), level_(level), max_payload_(max_payload),
+      tiles_x_((width_ + tile - 1) / tile), tiles_y_((height_ + tile - 1) / tile),
+      cur_(size_t(width_) * height_ * 4), sent_(size_t(width_) * height_ * 4),
+      dirty_(size_t(tiles_x_) * tiles_y_, 1), clean_(size_t(height_), 0),
+      sentHash_(size_t(height_), 0), hashOk_(size_t(height_), 0) {
+  if (width <= 0 || height <= 0 || width_ > 65535 || height_ > 65535) throw std::runtime_error("tiles: bad size");
+  if (scale_ > 1) src_.assign(size_t(width) * height * 4, 0);
   cctx_ = ZSTD_createCCtx();
   if (!cctx_) throw std::runtime_error("tiles: ZSTD_createCCtx failed");
   ZSTD_CCtx_setParameter(static_cast<ZSTD_CCtx*>(cctx_), ZSTD_c_compressionLevel, level_);
@@ -56,18 +63,44 @@ void Encoder::update(const FrameView& view, const std::vector<DamageRect>* damag
   const auto& rects = damage && !damage->empty() ? *damage : whole;
   for (const auto& d : rects) {
     const int x0 = std::max({d.x, view.x, 0}), y0 = std::max({d.y, view.y, 0});
-    const int x1 = std::min({d.x + d.width, view.x + view.width, width_});
-    const int y1 = std::min({d.y + d.height, view.y + view.height, height_});
+    const int x1 = std::min({d.x + d.width, view.x + view.width, srcWidth_});
+    const int y1 = std::min({d.y + d.height, view.y + view.height, srcHeight_});
     if (x1 <= x0 || y1 <= y0) continue;
     if (view.format != format_) {
       if (!formatKnown_) { format_ = view.format; formatKnown_ = true; }
       else throw std::runtime_error("tiles: pixel format changed");
     }
     formatKnown_ = true;
+    if (scale_ == 1) {
+      for (int y = y0; y < y1; ++y)
+        std::memcpy(&cur_[(size_t(y) * width_ + x0) * 4], view.data + size_t(y - view.y) * view.stride + size_t(x0 - view.x) * 4,
+                    size_t(x1 - x0) * 4);
+      markDirty(x0, y0, x1 - x0, y1 - y0);
+      continue;
+    }
+    // Keep the desktop at full size, then average whole k x k blocks into cur_.
     for (int y = y0; y < y1; ++y)
-      std::memcpy(&cur_[(size_t(y) * width_ + x0) * 4], view.data + size_t(y - view.y) * view.stride + size_t(x0 - view.x) * 4,
+      std::memcpy(&src_[(size_t(y) * srcWidth_ + x0) * 4], view.data + size_t(y - view.y) * view.stride + size_t(x0 - view.x) * 4,
                   size_t(x1 - x0) * 4);
-    markDirty(x0, y0, x1 - x0, y1 - y0);
+    const int k = scale_, bx0 = x0 / k, by0 = y0 / k, bx1 = (x1 + k - 1) / k, by1 = (y1 + k - 1) / k;
+    std::vector<uint32_t> sum(size_t(bx1 - bx0) * 4);
+    for (int by = by0; by < by1; ++by) {
+      std::fill(sum.begin(), sum.end(), 0);
+      const int sy0 = by * k, sy1 = std::min(srcHeight_, sy0 + k);
+      for (int sy = sy0; sy < sy1; ++sy) {
+        const uint8_t* s = &src_[(size_t(sy) * srcWidth_ + size_t(bx0) * k) * 4];
+        const int sx1 = std::min(srcWidth_, bx1 * k);
+        for (int sx = bx0 * k, i = 0; sx < sx1; ++sx, s += 4, i += (sx % k == 0) ? 4 : 0) {
+          sum[i] += s[0]; sum[i + 1] += s[1]; sum[i + 2] += s[2]; sum[i + 3] += s[3];
+        }
+      }
+      uint8_t* t = &cur_[(size_t(by) * width_ + bx0) * 4];
+      for (int bx = bx0, i = 0; bx < bx1; ++bx, i += 4, t += 4) {
+        const uint32_t n = uint32_t(sy1 - sy0) * uint32_t(std::min(srcWidth_, bx * k + k) - bx * k);
+        for (int c = 0; c < 4; ++c) t[c] = uint8_t((sum[i + c] + n / 2) / n);
+      }
+    }
+    markDirty(bx0, by0, bx1 - bx0, by1 - by0);
   }
 }
 

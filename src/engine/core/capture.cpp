@@ -244,7 +244,7 @@ struct CaptureEncoder::Impl {
   uint64_t revision = 0;
   bool active = false;
   bool session_tiles = false;
-  unsigned session_inflight = 1;
+  unsigned session_inflight = 1, session_width = 0, session_height = 0;
   uint64_t key_requests = 0;
   CaptureStats counters;
   void wake() { wake_event.signal(); }
@@ -280,6 +280,7 @@ struct CaptureEncoder::Impl {
       bool last_was_refinement = true, refining = false;
       bool tiles_mode = false, continuing = false;
       unsigned tiles_inflight = 1;
+      int tiles_scale = 1;
       uint64_t keys_done = 0;
       std::unique_ptr<tiles::Encoder> tiles_encoder;
       unsigned cascade_frames = 0;
@@ -304,6 +305,11 @@ struct CaptureEncoder::Impl {
             refresh_cursor = true;
             tiles_mode = session_tiles;
             tiles_inflight = session_inflight;
+            {
+              const int k = tiles::scaleFor(width, height, int(session_width), int(session_height));
+              if (k != tiles_scale) tiles_encoder.reset();
+              tiles_scale = k;
+            }
             continuing = false;
             keys_done = key_requests;
           }
@@ -334,7 +340,7 @@ struct CaptureEncoder::Impl {
           try {
             const bool key = force_idr || key_request;
             dirty = false;
-            if (!tiles_encoder) tiles_encoder = std::make_unique<tiles::Encoder>(width, height, 1, FlowControl::max_bytes - 64);
+            if (!tiles_encoder) tiles_encoder = std::make_unique<tiles::Encoder>(width, height, 1, FlowControl::max_bytes - 64, tiles_scale);
             if (key || !continuing) {
               const FrameView view = source->captureChanged(key);
               require(view.data && view.width > 0 && view.height > 0 &&
@@ -369,7 +375,7 @@ struct CaptureEncoder::Impl {
             if (built && current) {
               last_pts = std::max(last_pts + 1, timestamp);
               output.generation = gen; output.sequence = seq; output.pts_us = uint64_t(last_pts);
-              output.width = uint16_t(width); output.height = uint16_t(height);
+              output.width = uint16_t(tiles_encoder->width()); output.height = uint16_t(tiles_encoder->height());
               output.keyframe = key; output.type = 8;
               if (!publish(std::move(output))) {
                 std::fprintf(stderr, "capture: publish rejected; awaiting new session\n");
@@ -583,7 +589,8 @@ bool CaptureEncoder::start(std::string& error) {
   if (!success) stop();
   return success;
 }
-void CaptureEncoder::beginSession(uint32_t generation, bool tiles, unsigned tiles_inflight) {
+void CaptureEncoder::beginSession(uint32_t generation, bool tiles, unsigned tiles_inflight,
+                                  unsigned tiles_width, unsigned tiles_height) {
   auto& i = *impl_;
   {
     std::lock_guard<std::mutex> lock(i.mutex);
@@ -591,6 +598,7 @@ void CaptureEncoder::beginSession(uint32_t generation, bool tiles, unsigned tile
     i.generation = generation;
     i.session_tiles = tiles;
     i.session_inflight = std::clamp(tiles_inflight, 1u, tiles::max_inflight);
+    i.session_width = tiles_width; i.session_height = tiles_height;
     i.sequence = 0;
     i.acknowledged = 0;
     i.window = 1; i.bitrate = i.settings.start_bitrate; i.paused = false; i.admit_until_us = 0;

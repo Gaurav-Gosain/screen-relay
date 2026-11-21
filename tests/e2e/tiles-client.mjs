@@ -1,7 +1,7 @@
 // Minimal tiles client for tests: connects to /stream?view=1&codec=tiles,
 // applies type 8 frames to an RGB buffer, ACKs each one, and can compare the
 // buffer with /screenshot.png. Usage:
-//   node tests/e2e/tiles-client.mjs http://127.0.0.1:8080 SECONDS [--keyframe-at S] [--ack-delay MS] [--inflight K] [--check]
+//   node tests/e2e/tiles-client.mjs http://127.0.0.1:8080 SECONDS [--keyframe-at S] [--ack-delay MS] [--inflight K] [--size WxH] [--check]
 // Prints one JSON line with frames, bytes, latency and the check result.
 import zlib from 'node:zlib';
 
@@ -13,6 +13,8 @@ const keyAt = rest.includes('--keyframe-at') ? Number(rest[rest.indexOf('--keyfr
 const ackDelay = rest.includes('--ack-delay') ? Number(rest[rest.indexOf('--ack-delay') + 1]) : 0;
 // --inflight K asks the engine for K frames in flight (tiles_inflight=K).
 const inflight = rest.includes('--inflight') ? Number(rest[rest.indexOf('--inflight') + 1]) : 1;
+// --size WxH asks the engine to scale by a whole factor (size=WxH); --check then box-filters the screenshot.
+const size = rest.includes('--size') ? rest[rest.indexOf('--size') + 1] : '';
 const token = process.env.SCREEN_RELAY_TOKEN;
 
 const u16 = (b, o) => (b[o] << 8) | b[o + 1];
@@ -86,7 +88,7 @@ function decodePng(buf) {
 }
 
 const stats = { frames: 0, keyframes: 0, bytes: 0, copies: 0, maxBytes: 0, lat: [], errors: [] };
-const ws = new WebSocket(base.replace(/^http/, 'ws') + '/stream?view=1&codec=tiles' + (inflight > 1 ? '&tiles_inflight=' + inflight : ''), token ? ['nsl1', 'bearer.' + token] : ['nsl1']);
+const ws = new WebSocket(base.replace(/^http/, 'ws') + '/stream?view=1&codec=tiles' + (inflight > 1 ? '&tiles_inflight=' + inflight : '') + (size ? '&size=' + size : ''), token ? ['nsl1', 'bearer.' + token] : ['nsl1']);
 ws.binaryType = 'arraybuffer';
 let gen = 0, keySent = false;
 const started = Date.now();
@@ -112,7 +114,18 @@ let lossless = null;
 if (check && rgb) {
   const headers = token ? { Authorization: 'Bearer ' + token } : {};
   const png = Buffer.from(await (await fetch(base + '/screenshot.png', { headers })).arrayBuffer());
-  const shot = decodePng(png);
+  let shot = decodePng(png);
+  const k = Math.round(shot.w / W);
+  if (k > 1 && Math.ceil(shot.w / k) === W && Math.ceil(shot.h / k) === H) {
+    const out = new Uint8Array(W * H * 3);
+    for (let by = 0; by < H; by++) for (let bx = 0; bx < W; bx++) {
+      const s = [0, 0, 0]; let n = 0;
+      for (let y = by * k; y < Math.min(shot.h, by * k + k); y++) for (let x = bx * k; x < Math.min(shot.w, bx * k + k); x++, n++)
+        for (let c = 0; c < 3; c++) s[c] += shot.rgb[(y * shot.w + x) * 3 + c];
+      for (let c = 0; c < 3; c++) out[(by * W + bx) * 3 + c] = Math.floor((s[c] + (n >> 1)) / n);
+    }
+    shot = { w: W, h: H, rgb: out };
+  }
   let diff = 0;
   if (shot.w === W && shot.h === H) { for (let i = 0; i < rgb.length; i++) if (rgb[i] !== shot.rgb[i]) diff++; } else diff = -1;
   lossless = { differing_bytes: diff, width: W, height: H };

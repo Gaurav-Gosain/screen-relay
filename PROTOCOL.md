@@ -121,6 +121,8 @@ The tiles codec sends exact pixels. It suits text, terminals and code editors, w
 - Add `codec=tiles` as the last query parameter of a `/stream` URL, for example `/stream?view=1&codec=tiles`. Without `--tiles`, the handshake fails.
 - Other connections keep H.264.
 - Add `&tiles_inflight=K` after `codec=tiles` to allow K frames in flight, K from 1 to 4. The default is 1. `/capabilities` shows `"tiles_max_inflight":4`.
+- Add `&size=WxH` after `codec=tiles` to get a smaller picture. The engine divides the desktop by the largest whole factor k that still gives at least W x H, at least 1. Each pixel is the mean of a k x k block. A whole factor keeps a scroll of a multiple of k pixels an exact copy. The keyframe gives the scaled size. `/capabilities` shows `"tiles_scale":"integer"`. Input coordinates stay 0 to 65535 across the whole desktop.
+- `tiles_inflight` and `size` can come in any order after `codec=tiles`, each once.
 - The engine keeps the allowed number of tiles frames in flight. It collects damage until the ACK arrives, then sends one frame for all of it. A slow client gets fewer frames, not older frames.
 
 A type 8 payload, all integers big-endian:
