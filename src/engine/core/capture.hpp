@@ -15,6 +15,8 @@ struct EncodedFrame {
   uint16_t width = 0;
   uint16_t height = 0;
   bool keyframe = false;
+  /// NSL1 message type: 1 carries an H.264 access unit in annex_b, 8 a tiles payload (see tiles.hpp).
+  uint8_t type = 1;
   std::vector<uint8_t> annex_b;
 };
 
@@ -43,7 +45,10 @@ class CaptureEncoder {
   CaptureEncoder(const CaptureEncoder&) = delete;
   CaptureEncoder& operator=(const CaptureEncoder&) = delete;
   bool start(std::string& error);
-  void beginSession(uint32_t generation);
+  /** Starts a session; tiles selects the lossless tiles codec in place of H.264. */
+  void beginSession(uint32_t generation, bool tiles = false);
+  /** Makes the next tiles frame of this session a keyframe. */
+  void requestKeyframe(uint32_t generation);
   void endSession(uint32_t generation);
   void acknowledge(uint32_t generation, uint32_t sequence);
   void setFlowControl(uint32_t generation, unsigned window, uint64_t bitrate, bool paused, uint64_t admit_until_us);

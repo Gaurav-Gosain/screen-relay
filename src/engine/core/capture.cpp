@@ -4,6 +4,7 @@
 #include "flow.hpp"
 #include "capture-source.hpp"
 #include "cpu-budget.hpp"
+#include "tiles.hpp"
 #include "wait.hpp"
 
 #include <cstdint>
@@ -242,6 +243,8 @@ struct CaptureEncoder::Impl {
   bool paused = false;
   uint64_t revision = 0;
   bool active = false;
+  bool session_tiles = false;
+  uint64_t key_requests = 0;
   CaptureStats counters;
   void wake() { wake_event.signal(); }
   void run() {
@@ -274,6 +277,9 @@ struct CaptureEncoder::Impl {
       auto last_publish = started;
       auto retry_after = Clock::time_point::min();
       bool last_was_refinement = true, refining = false;
+      bool tiles_mode = false;
+      uint64_t keys_done = 0;
+      std::unique_ptr<tiles::Encoder> tiles_encoder;
       unsigned cascade_frames = 0;
       uint64_t first_refinement_size = 0;
       auto reset_refinement = [&] {
@@ -285,7 +291,8 @@ struct CaptureEncoder::Impl {
         if (source->drainDamage()) dirty = true;
         uint32_t gen, seq;
         uint64_t rev, rate;
-        bool admitted, cursor_active, queue_empty, refresh_cursor = false;
+        bool admitted, cursor_active, queue_empty, refresh_cursor = false, key_request = false;
+        uint64_t keys_wanted = 0;
         {
           std::lock_guard<std::mutex> lock(mutex);
           if (stopping) break;
@@ -293,14 +300,19 @@ struct CaptureEncoder::Impl {
             seen_revision = revision; dirty = true; force_idr = true;
             reset_refinement();
             refresh_cursor = true;
+            tiles_mode = session_tiles;
+            keys_done = key_requests;
           }
+          keys_wanted = key_requests;
+          key_request = tiles_mode && keys_wanted != keys_done;
           gen = generation; rev = revision; rate = bitrate;
           cursor_active = gen != 0 && active && bool(publish_cursor);
           queue_empty = sequence == acknowledged;
           admitted = gen != 0 && active && !paused &&
                      (!admit_until_us || uint64_t(std::chrono::duration_cast<std::chrono::microseconds>(
                          Clock::now().time_since_epoch()).count()) < admit_until_us) &&
-                     sequence - acknowledged < window &&
+                     // Tiles frames are deltas: one in flight, damage collects until the ACK.
+                     sequence - acknowledged < (tiles_mode ? 1u : window) &&
                      sequence < std::numeric_limits<uint32_t>::max();
           seq = sequence + (admitted ? 1 : 0);
         }
@@ -312,10 +324,72 @@ struct CaptureEncoder::Impl {
         }
         const auto now = Clock::now();
         const int64_t now_ns = ns(now.time_since_epoch());
-        const bool refinement_pending = !dirty && refining;
+        if (tiles_mode && admitted && (dirty || key_request) && now >= retry_after && bucket.ready(now_ns)) {
+          const auto capture_start = Clock::now();
+          try {
+            const bool key = force_idr || key_request;
+            dirty = false;
+            const FrameView view = source->captureChanged(key);
+            const auto captured = Clock::now();
+            require(view.data && view.width > 0 && view.height > 0 &&
+                    view.x >= 0 && view.y >= 0 && view.width <= width - view.x && view.height <= height - view.y &&
+                    view.stride >= view.width * 4 &&
+                    !(key && (view.width != width || view.height != height)) &&
+                    view.format == r.format, "invalid capture frame");
+            if (!tiles_encoder) tiles_encoder = std::make_unique<tiles::Encoder>(width, height, 1, FlowControl::max_bytes - 64);
+            if (key) {
+              tiles_encoder->update(view, nullptr);
+            } else {
+              if (!source->changedRects(rects)) rects = {{view.x, view.y, view.width, view.height}};
+              tiles_encoder->update(view, &rects);
+            }
+            const int64_t timestamp = std::chrono::duration_cast<std::chrono::microseconds>(capture_start.time_since_epoch()).count();
+            EncodedFrame output;
+            const bool built = tiles_encoder->encode(key, uint64_t(std::max(last_pts + 1, timestamp)), output.annex_b);
+            const auto encoded = Clock::now();
+            bucket.spend(ns(encoded.time_since_epoch()));
+            if (tiles_encoder->dirty()) dirty = true;  // the size limit left damage for the next frame
+            bool current = false;
+            {
+              std::lock_guard<std::mutex> lock(mutex);
+              ++counters.captures;
+              counters.capture_ns += ns(captured - capture_start);
+              if (built) { ++counters.encoded; counters.encode_ns += ns(encoded - captured); }
+              current = built && revision == rev && generation == gen && active;
+              if (current) sequence = seq;
+            }
+            if (built && current) {
+              last_pts = std::max(last_pts + 1, timestamp);
+              output.generation = gen; output.sequence = seq; output.pts_us = uint64_t(last_pts);
+              output.width = uint16_t(width); output.height = uint16_t(height);
+              output.keyframe = key; output.type = 8;
+              if (!publish(std::move(output))) {
+                std::fprintf(stderr, "capture: publish rejected; awaiting new session\n");
+                { std::lock_guard<std::mutex> lock(mutex); if (generation == gen) active = false; }
+                dirty = true; force_idr = true;
+              } else {
+                force_idr = false;
+                keys_done = keys_wanted;
+                last_publish = Clock::now();
+              }
+            } else if (built) {
+              dirty = true; force_idr = true;
+            }
+            consecutive_failures = 0;
+          } catch (const std::exception& error) {
+            std::fprintf(stderr, "capture: %s; retrying with a keyframe\n", error.what());
+            dirty = true; force_idr = true;
+            tiles_encoder.reset();
+            if (++consecutive_failures >= 3)
+              throw std::runtime_error(std::string("capture failed three consecutive times: ") + error.what());
+            retry_after = Clock::now() + std::chrono::seconds(1);
+          }
+          continue;
+        }
+        const bool refinement_pending = !tiles_mode && !dirty && refining;
         const auto refinement_pace = last_was_refinement ? frame_interval : refinement_delay;
         const bool refinement_ready = !refinement_pending || now >= last_publish + refinement_pace;
-        if (admitted && (dirty || (refinement_pending && queue_empty)) && now >= retry_after &&
+        if (!tiles_mode && admitted && (dirty || (refinement_pending && queue_empty)) && now >= retry_after &&
             refinement_ready && bucket.ready(now_ns)) {
           bool refinement = !dirty;
           const bool captured_frame = !refinement;
@@ -449,7 +523,7 @@ struct CaptureEncoder::Impl {
         // A synchronous cursor read may have buffered display events in Xlib.
         if (cursor_published) continue;
         int64_t timeout_ns = -1;
-        if (admitted && (dirty || (refinement_pending && queue_empty))) {
+        if (admitted && (dirty || key_request || (refinement_pending && queue_empty))) {
           const auto wait_now = Clock::now();
           const int64_t wait_now_ns = ns(wait_now.time_since_epoch());
           auto wake_at = wait_now + std::chrono::nanoseconds(bucket.wait_ns(wait_now_ns));
@@ -501,12 +575,13 @@ bool CaptureEncoder::start(std::string& error) {
   if (!success) stop();
   return success;
 }
-void CaptureEncoder::beginSession(uint32_t generation) {
+void CaptureEncoder::beginSession(uint32_t generation, bool tiles) {
   auto& i = *impl_;
   {
     std::lock_guard<std::mutex> lock(i.mutex);
     if (!generation || !i.running) return;
     i.generation = generation;
+    i.session_tiles = tiles;
     i.sequence = 0;
     i.acknowledged = 0;
     i.window = 1; i.bitrate = i.settings.start_bitrate; i.paused = false; i.admit_until_us = 0;
@@ -514,6 +589,13 @@ void CaptureEncoder::beginSession(uint32_t generation) {
     ++i.revision;
     i.wake();
   }
+}
+void CaptureEncoder::requestKeyframe(uint32_t generation) {
+  auto& i = *impl_;
+  std::lock_guard<std::mutex> lock(i.mutex);
+  if (!generation || generation != i.generation || !i.session_tiles) return;
+  ++i.key_requests;
+  i.wake();
 }
 void CaptureEncoder::endSession(uint32_t generation) {
   auto& i = *impl_;

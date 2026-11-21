@@ -75,7 +75,8 @@ std::string jsonString(const std::string& text) {
   }
   return out + '"';
 }
-Target viewerTarget(const std::string& target) {
+namespace {
+Target plainTarget(const std::string& target) {
   if (target == "/stream?view=1") return {Socket::watch, false};
   if (target == "/stream") return {Socket::stream, false};
   if (target == "/stream?clipboard=1") return {Socket::stream, true};
@@ -83,6 +84,24 @@ Target viewerTarget(const std::string& target) {
   if (target == "/stream?take=1&clipboard=1") return {Socket::take, true};
   if (target == "/control") return {Socket::control, false};
   return {};
+}
+}  // namespace
+Target viewerTarget(const std::string& whole) {
+  std::string target = whole;
+  bool tiles = false;
+  for (const char* suffix : {"&codec=tiles", "?codec=tiles"}) {
+    const std::string s(suffix);
+    if (target.size() > s.size() && target.compare(target.size() - s.size(), s.size(), s) == 0) {
+      target.resize(target.size() - s.size());
+      tiles = true;
+      break;
+    }
+  }
+  Target t = plainTarget(target);
+  if (!tiles) return t;
+  if (t.socket == Socket::control || t.socket == Socket::none) return {};
+  t.tiles = true;
+  return t;
 }
 ConnectionPlan connectionPlan(Socket socket, size_t viewerCount, bool streamOwnsInput, bool controlOpen,
                               size_t grantViewerCount, bool grant, bool inputViewerHasGrant) {
@@ -110,6 +129,14 @@ bool frameMessage(std::vector<uint8_t>& out, size_t pre, uint32_t generation, ui
   put(p+6, f.keyframe ? 1 : 0, 2); put(p+12, f.sequence, 4);
   put(p+16, 12+f.annex_b.size(), 4); put(p+20, f.width, 2); put(p+22, f.height, 2); put(p+24, f.pts_us, 8);
   std::memcpy(p+32, f.annex_b.data(), f.annex_b.size());
+  return true;
+}
+bool tilesMessage(std::vector<uint8_t>& out, size_t pre, uint32_t generation, uint32_t lastSequence, const EncodedFrame& f) {
+  if (f.type != 8 || !f.sequence || f.sequence != lastSequence + 1 || f.annex_b.size() < 20 ||
+      f.annex_b.size() > FlowControl::max_bytes || (!lastSequence && !f.keyframe)) return false;
+  auto* p = start(out, pre, 20 + f.annex_b.size(), 8, generation);
+  put(p+6, f.keyframe ? 1 : 0, 2); put(p+12, f.sequence, 4); put(p+16, f.annex_b.size(), 4);
+  std::memcpy(p+20, f.annex_b.data(), f.annex_b.size());
   return true;
 }
 bool cursorMessage(std::vector<uint8_t>& out, size_t pre, uint32_t generation, const CursorImage& c) {

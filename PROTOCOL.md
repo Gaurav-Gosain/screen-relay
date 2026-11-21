@@ -100,6 +100,8 @@ Every message starts with this 20-byte header.
 | 5 | Server to `/control` | One status byte: 0 accepted, 1 invalid, 2 unsupported. Sequence echoes the request ID. A status of 0 does not report a later backend failure. |
 | 6 | Server to `/stream` | Width, height, hotspot X, and hotspot Y (2 bytes each), followed by straight-alpha RGBA pixels row by row. Sequence is zero. No ACK is needed. |
 | 7 | Server to a `/stream` opened with `clipboard=1` | Clipboard notice: a desktop application changed the clipboard. Changes made through `POST /clipboard` do not send a notice. Empty payload, sequence zero, no ACK. Read the text with `GET /clipboard`. |
+| 8 | Server to a `/stream` opened with `codec=tiles` | One tiles frame, in place of type 1. See [Tiles codec](#tiles-codec). Flags bit 0 marks a keyframe. Sequence starts at 1 and increases per frame. ACK it like type 1. |
+| 9 | `/stream` with `codec=tiles` to server | Keyframe request. Empty payload, sequence zero. The next type 8 frame is a keyframe. |
 
 | Rule | Detail |
 | --- | --- |
@@ -110,3 +112,37 @@ Every message starts with this 20-byte header.
 | Cursor | At most 256 by 256 pixels, with the hotspot inside the image. Eight zero bytes restore the local arrow; a transparent image hides the cursor. The cursor does not follow pointer jumps made by the desktop. |
 | Disconnect | Held input is released. Reconnecting does not replay requests. |
 | Clipboard | Only a `/stream` opened with `clipboard=1` receives type 7, so a client that rejects unknown types keeps working. Several changes close together can arrive as one notice, and one change can arrive as more than one. |
+
+## Tiles codec
+
+The tiles codec sends exact pixels. It suits text, terminals and code editors, where H.264 blurs.
+
+- Start the engine with `--tiles`. Then `GET /capabilities` has `"codecs":["h264","tiles"]` and `"tiles_version":1`.
+- Add `codec=tiles` as the last query parameter of a `/stream` URL, for example `/stream?view=1&codec=tiles`. Without `--tiles`, the handshake fails.
+- Other connections keep H.264.
+- The engine keeps one tiles frame in flight. It collects damage until the ACK arrives, then sends one frame for all of it. A slow client gets fewer frames, not older frames.
+
+A type 8 payload, all integers big-endian:
+
+| Offset | Size | Field |
+| ---: | ---: | --- |
+| 0 | 1 | Format version: 1 |
+| 1 | 1 | Flags: bit 0 is a keyframe |
+| 2 | 4 | Desktop width and height, 2 bytes each |
+| 6 | 8 | Capture time in microseconds |
+| 14 | 2 | Op count |
+| 16 | 4 | Length of the pixel blob |
+| 20 | | Ops, then the pixel blob |
+
+| Op | Fields after the op byte | Effect on the RGB buffer |
+| ---: | --- | --- |
+| 1 copy | sx, sy, x, y, w, h (2 bytes each) | Copies the w x h rectangle at (sx, sy) to (x, y). The rectangles can overlap. The result is as if the source was read first. |
+| 2 pixels | x, y, w, h | Replaces the rectangle with the next w x h x 3 bytes (R, G, B) of the decoded blob |
+| 3 fill | x, y, w, h, then r, g, b (1 byte each) | Fills the rectangle with one colour |
+
+- The pixel blob is one zstd frame. It decodes to the pixel bytes of all pixels ops, in op order. It is empty when there are no pixels ops.
+- Apply the ops in order. On a keyframe, first make a black buffer of the given size.
+- Each rectangle is inside the desktop and is not empty. Reject a frame that breaks a rule and send type 9.
+- When the damage does not fit in one 8 MiB message, the next frames carry the rest.
+
+The reference decoder is `relay::tiles::apply` in `src/engine/core/tiles.cpp`. A test client is `tests/e2e/tiles-client.mjs`.

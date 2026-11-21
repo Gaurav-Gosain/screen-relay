@@ -186,6 +186,29 @@ int main() {
                            "/stream?view=1&clipboard=1", "/control?clipboard=1", "/stream?clipboard=1&take=1"}) {
     assert(target(text, Socket::none, false));
   }
+  // codec=tiles, as the last parameter of a /stream target.
+  assert(viewerTarget("/stream?view=1&codec=tiles").tiles && viewerTarget("/stream?view=1&codec=tiles").socket == Socket::watch);
+  assert(viewerTarget("/stream?codec=tiles").socket == Socket::stream && viewerTarget("/stream?codec=tiles").tiles);
+  assert(viewerTarget("/stream?take=1&clipboard=1&codec=tiles").clipboard && viewerTarget("/stream?take=1&clipboard=1&codec=tiles").tiles);
+  assert(!viewerTarget("/stream?view=1").tiles);
+  for (const char* text : {"/control?codec=tiles", "/stream?codec=tiles&view=1", "/stream?view=1&codec=h264", "/stream?view=1&codec=tiles&codec=tiles",
+                           "/stream?view=0&codec=tiles", "/codec=tiles"}) {
+    assert(viewerTarget(text).socket == Socket::none);
+  }
+  {
+    EncodedFrame f;
+    f.type = 8; f.sequence = 1; f.keyframe = true; f.annex_b.assign(20, 0); f.annex_b[0] = 1;
+    std::vector<uint8_t> out;
+    assert(tilesMessage(out, 4, 7, 0, f));
+    assert(out.size() == 4 + 20 + 20 && std::memcmp(out.data() + 4, "NSL1", 4) == 0 && out[4 + 5] == 8 && out[4 + 7] == 1);
+    assert(u32(out.data() + 4 + 12) == 1 && u32(out.data() + 4 + 16) == 20 && out[4 + 20] == 1);
+    f.keyframe = false;
+    assert(!tilesMessage(out, 0, 7, 0, f));  // the first frame must be a keyframe
+    f.sequence = 2;
+    assert(tilesMessage(out, 0, 7, 1, f) && !tilesMessage(out, 0, 7, 2, f));
+    f.type = 1;
+    assert(!tilesMessage(out, 0, 7, 1, f));
+  }
   {
     struct Row { Socket socket; size_t viewerCount; bool owns, control, open, closeStream, closeControl; };
     const Row rows[] = {

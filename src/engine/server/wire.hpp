@@ -28,8 +28,10 @@ enum class Socket : uint8_t { none, watch, stream, take, control };
 struct Target {
   Socket socket = Socket::none;
   bool clipboard = false;
+  bool tiles = false;
 };
-/** Classifies /stream?view=1, /stream, /stream?take=1, /stream?clipboard=1, /stream?take=1&clipboard=1, and /control; any other target opens Socket::none. */
+/** Classifies /stream?view=1, /stream, /stream?take=1, /stream?clipboard=1, /stream?take=1&clipboard=1, and /control; any other target opens Socket::none.
+    A /stream target may end with codec=tiles (as its last parameter) to ask for the tiles codec. */
 Target viewerTarget(const std::string& target);
 /** What opening a socket does to the sockets already open. */
 struct ConnectionPlan {
@@ -47,6 +49,8 @@ ConnectionPlan connectionPlan(Socket socket, size_t viewerCount, bool streamOwns
  */
 bool frameMessage(std::vector<uint8_t>& out, size_t pre, uint32_t generation, uint32_t lastSequence, const EncodedFrame& frame,
                   uint16_t width, uint16_t height);
+/** Type 8: one tiles payload (built by tiles::Encoder) as it is. */
+bool tilesMessage(std::vector<uint8_t>& out, size_t pre, uint32_t generation, uint32_t lastSequence, const EncodedFrame& frame);
 bool cursorMessage(std::vector<uint8_t>& out, size_t pre, uint32_t generation, const CursorImage& cursor);
 void controlReady(std::vector<uint8_t>& out, size_t pre, uint32_t generation, uint16_t width, uint16_t height);
 /** Tells a controlling /stream viewer that the desktop clipboard changed; it reads the text from /clipboard. */

@@ -81,13 +81,13 @@ backendFor(server.config.backend).capture, [this, &server](uint32_t gen, CursorI
   const auto& cfg = server.config;
   flow.configure(cfg.bitrate_min, cfg.bitrate_start, cfg.bitrate_max, cfg.fps);
 }
-void Server::Stream::begin(lws* wsi, uint32_t gen) {
+void Server::Stream::begin(lws* wsi, uint32_t gen, bool tiles) {
   viewer = wsi;
 #ifdef __linux__
   configureStreamSocket(wsi);
 #endif
   { std::lock_guard<std::mutex> lock(mutex); generation = gen; }
-  capture.beginSession(gen);
+  capture.beginSession(gen, tiles);
 }
 void Server::Stream::end() {
   uint32_t old;
@@ -118,7 +118,7 @@ ConnectionPlan Server::planConnection(Socket socket, bool grant) {
   }
   return connectionPlan(socket, count, input_viewer != nullptr, control != nullptr, grantCount, grant, inputViewerHasGrant);
 }
-int Server::startStream(lws* wsi, Socket socket, const ConnectionPlan& plan, bool clipboardNotices) {
+int Server::startStream(lws* wsi, Socket socket, const ConnectionPlan& plan, bool clipboardNotices, bool tiles) {
   auto slot = std::find_if(streams.begin(), streams.end(), [](const auto& stream) { return !stream || !stream->viewer; });
   if (slot != streams.end() && !*slot) {
     auto stream = std::make_unique<Stream>(*this);
@@ -143,7 +143,7 @@ int Server::startStream(lws* wsi, Socket socket, const ConnectionPlan& plan, boo
   auto& stream = **slot;
   stream.width = width; stream.height = height;
   stream.clipboard_notices = clipboardNotices;
-  stream.begin(wsi, ++nextGeneration);
+  stream.begin(wsi, ++nextGeneration, tiles);
   stream.updateFlow(config.proxy);
   return 0;
 }
@@ -213,6 +213,11 @@ bool Server::streamMessage(Stream& stream) {
       if (gen == stream.generation && seq) accepted = stream.flow.ack(seq, nowUs(), wait);
     }
     if (accepted) { stream.capture.acknowledge(gen, seq); stream.updateFlow(config.proxy); }
+    return true;
+  }
+  if (b[5] == 9) {  // keyframe request from a tiles client
+    if (b.size() != 20 || seq || gen != stream.generation) return false;
+    stream.capture.requestKeyframe(gen);
     return true;
   }
   if (b[5] != 3 || b.size() != 36 || seq || gen != stream.generation) return false;
@@ -388,7 +393,8 @@ int Server::Stream::write(bool proxy) {
   }
   auto& f = *frame;
   if (f.generation != generation) return 0;
-  if (!frameMessage(wire, LWS_PRE, generation, lastSequence, f, width, height)) return -1;
+  if (!(f.type == 8 ? tilesMessage(wire, LWS_PRE, generation, lastSequence, f)
+                    : frameMessage(wire, LWS_PRE, generation, lastSequence, f, width, height))) return -1;
   const size_t size = wire.size() - LWS_PRE;
   if (lws_write(wsi, wire.data() + LWS_PRE, size, LWS_WRITE_BINARY) != int(size)) return -1;
   buffered_stream_bytes = lws_partial_buffered(wsi) ? size : 0;
@@ -602,7 +608,8 @@ int callback(lws* wsi, lws_callback_reasons reason, void* user, void* in, size_t
             ",\"input_endpoint\":\"/input\",\"max_input_batch\":" + std::to_string(max_input_batch) +
             ",\"audio\":false,\"clipboard\":" + (s->clipboard.available() ? "true" : "false") +
             ",\"clipboard_endpoint\":\"/clipboard\",\"max_clipboard_bytes\":" + std::to_string(max_clipboard_bytes) +
-            ",\"resize\":false,\"ime\":false}";
+            ",\"resize\":false,\"ime\":false" +
+            (s->config.tiles ? ",\"codecs\":[\"h264\",\"tiles\"],\"tiles_version\":1}" : ",\"codecs\":[\"h264\"]}");
         return jsonResponse(wsi, response, HTTP_STATUS_OK, json);
       }
       std::string file; const char* mime = nullptr; const char* headers = nullptr; int headerCount = 0;
@@ -684,6 +691,7 @@ int callback(lws* wsi, lws_callback_reasons reason, void* user, void* in, size_t
       }
       const Target parsed = viewerTarget(target);
       if (parsed.socket == Socket::none || !localHost(s->config, wsi) || s->nextGeneration == UINT32_MAX) return 1;
+      if (parsed.tiles && !s->config.tiles) return 1;
       auto* response = static_cast<HttpResponse*>(user);
       response->grant_id = 0;
       // The session token keeps the browser Origin check. A grant is already a
@@ -697,7 +705,7 @@ int callback(lws* wsi, lws_callback_reasons reason, void* user, void* in, size_t
         response->grant_id = grant->id;
       }
       if (!s->planConnection(parsed.socket, response->grant_id != 0).open && parsed.socket != Socket::control) return 1;
-      response->socket = parsed.socket; response->clipboard = parsed.clipboard;
+      response->socket = parsed.socket; response->clipboard = parsed.clipboard; response->tiles = parsed.tiles;
       return 0;
     }
     case LWS_CALLBACK_ESTABLISHED: {
@@ -725,7 +733,7 @@ int callback(lws* wsi, lws_callback_reasons reason, void* user, void* in, size_t
         s->control_ready = true; lws_callback_on_writable(wsi);
         return 0;
       }
-      return s->startStream(wsi, socket, plan, response->clipboard);
+      return s->startStream(wsi, socket, plan, response->clipboard, response->tiles);
     }
     case LWS_CALLBACK_RECEIVE: {
       if (s->closing.count(wsi)) return 0;
