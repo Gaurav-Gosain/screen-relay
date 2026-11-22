@@ -28,7 +28,14 @@ endif
 BACKEND_PKGS = $(sort $(foreach backend,$(BACKENDS),$(BACKEND_PKGS_$(backend))))
 BACKEND_DIRS = $(sort $(foreach backend,$(BACKENDS),$(BACKEND_DIR_$(backend))))
 BACKEND_CPPFLAGS = $(foreach backend,$(sort $(BACKENDS)),-DRELAY_BACKEND_$(backend) $(BACKEND_FLAGS_$(backend)))
+# X264=0 builds a tiles-only engine without x264: every video stream must use codec=tiles.
+X264 ?= 1
+ifeq ($(X264),0)
+CODEC_PKGS = libzstd
+CPPFLAGS += -DRELAY_NO_X264
+else
 CODEC_PKGS = x264 libzstd
+endif
 PKGS = $(sort $(BACKEND_PKGS) $(CODEC_PKGS) $(PLATFORM_PKGS) libwebsockets zlib)
 CPPFLAGS += -Isrc/engine $(BACKEND_CPPFLAGS) $(shell pkg-config --cflags $(PKGS))
 CXXFLAGS ?= -O2
@@ -82,7 +89,7 @@ install: relay-engine
 
 build/backends: FORCE
 	mkdir -p build
-	@printf '%s\n' '$(strip $(BACKENDS))' | cmp -s - $@ || printf '%s\n' '$(strip $(BACKENDS))' > $@
+	@printf '%s\n' '$(strip $(BACKENDS)) x264=$(X264)' | cmp -s - $@ || printf '%s\n' '$(strip $(BACKENDS)) x264=$(X264)' > $@
 
 FORCE:
 

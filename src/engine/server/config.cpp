@@ -309,6 +309,7 @@ bool parseConfig(int argc, char** argv, Config& config) {
                    "http://127.0.0.1[:PORT] for a page served on the machine itself.\n"
                    "--check initializes the backend and exits without starting capture or the server.\n"
                    "--tiles lets a /stream connection ask for the lossless tiles codec with codec=tiles.\n"
+                   "An engine built with make X264=0 has only the tiles codec, so --tiles is always on.\n"
                    "--scale gpu lets ScreenCaptureKit scale tiles frames for size=WxH (macOS). The default, box, divides by a whole factor.\n"
                    "Attach to DISPLAY using the caller's XAUTHORITY. Defaults: 127.0.0.1:8080, 60 fps,\n"
                    "1000000/8000000/40000000 bps.\n"

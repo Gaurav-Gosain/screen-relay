@@ -100,6 +100,18 @@ Run the engine tests with `make test`, which also needs the FFmpeg development l
 
 [CONTRIBUTING.md](CONTRIBUTING.md) covers the source layout, the engine, and the tests. [AGENTS.md](AGENTS.md) covers the writing rules and the release process.
 
+## Tiles codec
+
+This fork adds a lossless tiles codec to the engine. The codec sends exact pixels, so text, terminals and code editors stay sharp. H.264 can blur them.
+
+- Start the engine with `relay-engine --tiles`.
+- A client asks for the codec with `codec=tiles` in the `/stream` URL. Other connections keep H.264.
+- Each frame sends only the changed pixels. A scroll becomes a copy, and zstd compresses the new pixels.
+- On macOS, `--scale gpu` lets ScreenCaptureKit scale the picture for `size=WxH`.
+- [PROTOCOL.md](PROTOCOL.md#tiles-codec) describes the message format.
+
+The tiles code is Apache-2.0, like the rest of this repository. To build an engine without x264, run `make X264=0`. That engine sends only tiles frames, so every `/stream` URL must ask for `codec=tiles`. It needs libzstd, and it does not link x264.
+
 ## Documentation
 
 - [screen-relay.dev](https://screen-relay.dev): introduction, guides, and reference

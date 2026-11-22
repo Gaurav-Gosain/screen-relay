@@ -8,7 +8,9 @@
 #include "wait.hpp"
 
 #include <cstdint>
+#ifndef RELAY_NO_X264
 #include <x264.h>
+#endif
 #include <algorithm>
 #include <atomic>
 #include <cassert>
@@ -48,7 +50,7 @@ using Clock = std::chrono::steady_clock;
 uint64_t ns(Clock::duration d) {
   return std::chrono::duration_cast<std::chrono::nanoseconds>(d).count();
 }
-bool hasNal(const std::vector<uint8_t>& bytes, uint8_t type) {
+[[maybe_unused]] bool hasNal(const std::vector<uint8_t>& bytes, uint8_t type) {
   for (size_t i = 0; i + 3 < bytes.size(); ++i) {
     if (bytes[i] == 0 && bytes[i + 1] == 0 && bytes[i + 2] == 1 &&
         (bytes[i + 3] & 31) == type) return true;
@@ -106,8 +108,10 @@ struct Resources {
   PixelFormat format;
   int width, height;
   CaptureSettings settings;
+#ifndef RELAY_NO_X264
   x264_t* codec = nullptr;
   x264_picture_t frame{};
+#endif
   std::vector<uint8_t> mb_info;
   int threads;
   std::vector<std::vector<uint8_t>> scratch;
@@ -121,6 +125,11 @@ struct Resources {
         threads(encoderThreads(h)),
         scratch(size_t(threads), std::vector<uint8_t>(size_t(w) * 24)), workers(threads),
         bitrate(s.start_bitrate) {}
+#ifdef RELAY_NO_X264
+  // Built without x264 (make X264=0): only tiles sessions run, so there is no H.264 encoder.
+  void openEncoder() {}
+  void init() {}
+#else
   ~Resources() {
     if (codec) x264_encoder_close(codec);
     if (frame_allocated) x264_picture_clean(&frame);
@@ -219,6 +228,7 @@ struct Resources {
     }
     return true;
   }
+#endif
 };
 }  // namespace
 
@@ -272,7 +282,7 @@ struct CaptureEncoder::Impl {
       unsigned consecutive_failures = 0;
       const auto frame_interval = std::chrono::nanoseconds(1000000000LL / settings.fps);
       const auto refinement_delay = std::chrono::milliseconds(150);
-      constexpr unsigned refinement_max_frames = 8;
+      [[maybe_unused]] constexpr unsigned refinement_max_frames = 8;
       CaptureBucket bucket;
       const auto started = Clock::now();
       bucket.reset(ns(started.time_since_epoch()), ns(frame_interval));
@@ -296,7 +306,8 @@ struct CaptureEncoder::Impl {
       while (true) {
         if (source->drainDamage()) dirty = true;
         uint32_t gen, seq;
-        uint64_t rev, rate;
+        uint64_t rev;
+        [[maybe_unused]] uint64_t rate;
         bool admitted, cursor_active, queue_empty, refresh_cursor = false, key_request = false;
         uint64_t keys_wanted = 0;
         {
@@ -424,7 +435,8 @@ struct CaptureEncoder::Impl {
         }
         const bool refinement_pending = !tiles_mode && !dirty && refining;
         const auto refinement_pace = last_was_refinement ? frame_interval : refinement_delay;
-        const bool refinement_ready = !refinement_pending || now >= last_publish + refinement_pace;
+        [[maybe_unused]] const bool refinement_ready = !refinement_pending || now >= last_publish + refinement_pace;
+#ifndef RELAY_NO_X264
         if (!tiles_mode && admitted && (dirty || (refinement_pending && queue_empty)) && now >= retry_after &&
             refinement_ready && bucket.ready(now_ns)) {
           bool refinement = !dirty;
@@ -556,6 +568,7 @@ struct CaptureEncoder::Impl {
           }
           continue;
         }
+#endif
         // A synchronous cursor read may have buffered display events in Xlib.
         if (cursor_published) continue;
         int64_t timeout_ns = -1;

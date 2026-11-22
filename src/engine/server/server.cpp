@@ -610,7 +610,7 @@ int callback(lws* wsi, lws_callback_reasons reason, void* user, void* in, size_t
             ",\"audio\":false,\"clipboard\":" + (s->clipboard.available() ? "true" : "false") +
             ",\"clipboard_endpoint\":\"/clipboard\",\"max_clipboard_bytes\":" + std::to_string(max_clipboard_bytes) +
             ",\"resize\":false,\"ime\":false" +
-            (s->config.tiles ? ",\"codecs\":[\"h264\",\"tiles\"],\"tiles_version\":1,\"tiles_max_inflight\":4,\"tiles_scale\":\"integer\"" + std::string(s->config.gpu_scale ? ",\"tiles_scale_gpu\":true" : "") + "}" : ",\"codecs\":[\"h264\"]}");
+            (s->config.tiles ? std::string(relay_has_h264 ? ",\"codecs\":[\"h264\",\"tiles\"]" : ",\"codecs\":[\"tiles\"]") + ",\"tiles_version\":1,\"tiles_max_inflight\":4,\"tiles_scale\":\"integer\"" + std::string(s->config.gpu_scale ? ",\"tiles_scale_gpu\":true" : "") + "}" : ",\"codecs\":[\"h264\"]}");
         return jsonResponse(wsi, response, HTTP_STATUS_OK, json);
       }
       std::string file; const char* mime = nullptr; const char* headers = nullptr; int headerCount = 0;
@@ -693,6 +693,10 @@ int callback(lws* wsi, lws_callback_reasons reason, void* user, void* in, size_t
       const Target parsed = viewerTarget(target);
       if (parsed.socket == Socket::none || !localHost(s->config, wsi) || s->nextGeneration == UINT32_MAX) return 1;
       if (parsed.tiles && !s->config.tiles) return 1;
+#ifdef RELAY_NO_X264
+      // Built without x264: a video stream must ask for the tiles codec.
+      if (parsed.socket != Socket::control && !parsed.tiles) return 1;
+#endif
       auto* response = static_cast<HttpResponse*>(user);
       response->grant_id = 0;
       // The session token keeps the browser Origin check. A grant is already a

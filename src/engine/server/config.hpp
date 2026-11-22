@@ -8,6 +8,12 @@
 #include <vector>
 
 namespace relay {
+#ifdef RELAY_NO_X264
+/// Built with make X264=0: no H.264 encoder, so every video stream uses the tiles codec.
+constexpr bool relay_has_h264 = false;
+#else
+constexpr bool relay_has_h264 = true;
+#endif
 struct Config {
   std::string bind = "127.0.0.1", viewer, token, origin, authority, cert, key, backend, output;
   unsigned port = 8080;
@@ -15,7 +21,7 @@ struct Config {
   uint64_t bitrate_min = 1000000, bitrate_start = 8000000, bitrate_max = 40000000;
   bool proxy = false, insecure_local = false, check = false;
   /// Allows /stream connections to ask for the lossless tiles codec with codec=tiles.
-  bool tiles = false;
+  bool tiles = !relay_has_h264;
   /// --scale gpu: tiles size=WxH asks the capture system to scale (macOS ScreenCaptureKit); box is the integer filter.
   bool gpu_scale = false;
   std::vector<std::string> allowed_origins;
