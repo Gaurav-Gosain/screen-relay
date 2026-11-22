@@ -218,7 +218,7 @@ std::unique_ptr<CaptureSource> makeCaptureSource() {
 }
 std::unique_ptr<CaptureSource> makeOutputCaptureSource(const std::string& output) {
   auto source = std::make_unique<X11CaptureSource>();
-  source->init(output);
+  source->init(output == all_outputs ? std::string() : output);  // the X screen already spans every monitor
   return source;
 }
 }

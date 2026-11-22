@@ -1,6 +1,7 @@
 #include "wayland.hpp"
 #include "core/bands.hpp"
 #include "core/capture-source.hpp"
+#include <sys/epoll.h>
 #include <sys/mman.h>
 #include <poll.h>
 #include <unistd.h>
@@ -9,6 +10,7 @@
 #include <cstring>
 #include <cerrno>
 #include <chrono>
+#include <cmath>
 #include <cstdint>
 #include <exception>
 #include <limits>
@@ -453,11 +455,110 @@ class WaylandCaptureSource final : public CaptureSource {
 };
 }
 
+namespace {
+/// output=all: every output in one picture, each placed by its layout position. The picture spans the
+/// layout box at the largest scale; an output with a smaller scale leaves black around its picture.
+class LayoutCaptureSource final : public CaptureSource {
+  struct Part {
+    std::unique_ptr<WaylandCaptureSource> source;
+    int x = 0, y = 0;  // place in the picture
+  };
+  std::vector<Part> parts;
+  int width = 0, height = 0;
+  FileDescriptor poller;
+  std::vector<uint8_t> pixels;
+  std::vector<DamageRect> damage;
+
+ public:
+  LayoutCaptureSource() : poller(::epoll_create1(EPOLL_CLOEXEC)) {
+    require(poller.get() >= 0, "creating the output poller failed");
+    const auto outputs = listOutputs();
+    require(!outputs.empty(), "No Wayland outputs available");
+    int x0 = outputs[0].x, y0 = outputs[0].y, x1 = x0, y1 = y0;
+    double scale = 1;
+    for (const auto& o : outputs) scale = std::max(scale, o.scale);
+    for (const auto& o : outputs) {
+      const int w = int(o.width / o.scale + 0.5), h = int(o.height / o.scale + 0.5);  // logical size
+      x0 = std::min(x0, o.x); y0 = std::min(y0, o.y); x1 = std::max(x1, o.x + w); y1 = std::max(y1, o.y + h);
+    }
+    width = (int(std::ceil((x1 - x0) * scale)) + 1) & ~1;
+    height = (int(std::ceil((y1 - y0) * scale)) + 1) & ~1;
+    checkSize(width, height);
+    pixels.assign(size_t(width) * height * 4, 0);
+    for (const auto& o : outputs) {
+      Part part;
+      part.source = std::make_unique<WaylandCaptureSource>(o.name);
+      part.x = int((o.x - x0) * scale); part.y = int((o.y - y0) * scale);
+      const auto size = part.source->dimensions();
+      require(part.x + size.first <= width && part.y + size.second <= height, "Wayland output does not fit the layout");
+      epoll_event event{};
+      event.events = EPOLLIN;
+      require(::epoll_ctl(poller.get(), EPOLL_CTL_ADD, part.source->fd(), &event) == 0, "watching a Wayland output failed");
+      parts.push_back(std::move(part));
+    }
+  }
+
+  int fd() const override { return poller.get(); }
+  std::pair<int, int> dimensions() const override { return {width, height}; }
+  PixelFormat pixelFormat() const override { return PixelFormat::BGRA; }
+  bool drainDamage() override {
+    bool dirty = false;
+    for (auto& part : parts) dirty = part.source->drainDamage() || dirty;
+    return dirty;
+  }
+  int64_t timeoutNs() const override {
+    int64_t soonest = -1;
+    for (const auto& part : parts) {
+      const int64_t t = part.source->timeoutNs();
+      if (t >= 0 && (soonest < 0 || t < soonest)) soonest = t;
+    }
+    return soonest;
+  }
+  void inputActivity() override { for (auto& part : parts) part.source->inputActivity(); }
+
+  void place(const Part& part, const FrameView& view, const DamageRect& r) {
+    for (int y = r.y; y < r.y + r.height; ++y)
+      std::memcpy(&pixels[(size_t(part.y + y) * width + part.x + r.x) * 4],
+                  view.data + size_t(y) * view.stride + size_t(r.x) * 4, size_t(r.width) * 4);
+    damage.push_back({part.x + r.x, part.y + r.y, r.width, r.height});
+  }
+
+  FrameView compose(bool full) {
+    damage.clear();
+    std::vector<DamageRect> rects;
+    for (auto& part : parts) {
+      const FrameView view = part.source->captureChanged(full);
+      rects.clear();
+      const bool known = part.source->changedRects(rects);
+      if (full || !known) rects = {{0, 0, view.width, view.height}};
+      for (const auto& r : rects) place(part, view, r);
+    }
+    return {pixels.data(), width * 4, width, height, PixelFormat::BGRA};
+  }
+
+  FrameView capture() override {
+    damage.clear();
+    for (auto& part : parts) {
+      const FrameView view = part.source->capture();
+      place(part, view, {0, 0, view.width, view.height});
+    }
+    return {pixels.data(), width * 4, width, height, PixelFormat::BGRA};
+  }
+  FrameView captureChanged(bool full) override { return compose(full); }
+  bool changedRects(std::vector<DamageRect>& out) override {
+    out = std::move(damage);
+    damage.clear();
+    return true;
+  }
+};
+}  // namespace
+
 std::unique_ptr<CaptureSource> makeCaptureSource() {
   return std::make_unique<WaylandCaptureSource>(std::string());
 }
 
 std::unique_ptr<CaptureSource> makeOutputCaptureSource(const std::string& output) {
+  if (output == all_outputs) return std::make_unique<LayoutCaptureSource>();
   return std::make_unique<WaylandCaptureSource>(output);
 }
 }

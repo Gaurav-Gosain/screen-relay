@@ -77,7 +77,7 @@ class X11Input final : public InputBackend {
   std::pair<uint16_t, uint16_t> dimensions() const override { return {width, height}; }
   const char* name() const override { return "x11"; }
   bool selectOutput(const std::string& output) override {
-    if (output.empty()) { origin_x = origin_y = 0; width = root_w; height = root_h; return true; }
+    if (output.empty() || output == all_outputs) { origin_x = origin_y = 0; width = root_w; height = root_h; return true; }
     const auto monitor = x11::findMonitor(display, output);
     if (!monitor || monitor->width < 1 || monitor->height < 1 || monitor->width > 65535 || monitor->height > 65535) return false;
     origin_x = monitor->x; origin_y = monitor->y;

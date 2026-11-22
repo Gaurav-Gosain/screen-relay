@@ -355,6 +355,23 @@ class WaylandInput final : public InputBackend {
   /// Moves the virtual pointer to another output; the size of the new output, or nothing when it is unknown.
   std::optional<std::pair<uint16_t, uint16_t>> bindOutput(const std::string& output) {
     try {
+      if (output == all_outputs) {
+        // A pointer without an output: absolute motion covers the layout box of all outputs.
+        const auto outputs = connection_->outputs();
+        if (outputs.empty()) return std::nullopt;
+        int x0 = outputs[0].x, y0 = outputs[0].y, x1 = x0, y1 = y0;
+        for (const auto& o : outputs) {
+          x0 = std::min(x0, o.x); y0 = std::min(y0, o.y);
+          x1 = std::max(x1, o.x + int(o.width / o.scale + 0.5)); y1 = std::max(y1, o.y + int(o.height / o.scale + 0.5));
+        }
+        if (x1 - x0 < 1 || y1 - y0 < 1 || x1 - x0 > 65535 || y1 - y0 > 65535) return std::nullopt;
+        VirtualPointer next(zwlr_virtual_pointer_manager_v1_create_virtual_pointer(
+          connection_->virtualPointerManager, seat_.get()), zwlr_virtual_pointer_v1_destroy);
+        if (!next) return std::nullopt;
+        pointer_ = std::move(next);
+        if (!flushDisplay(connection_->display) || wl_display_roundtrip(connection_->display) < 0) return std::nullopt;
+        return std::make_pair(uint16_t(x1 - x0), uint16_t(y1 - y0));
+      }
       if (!connection_->rebind(output)) return std::nullopt;
       if (connection_->width < 1 || connection_->height < 1 ||
           connection_->width > std::numeric_limits<uint16_t>::max() ||

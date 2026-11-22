@@ -68,6 +68,7 @@ The Wayland and X11 backends can capture one display of several. On X11 a displa
 - Pointer input from that connection goes to that display: 0 to 65535 covers the display, not the desktop.
 - `POST /input?output=NAME` and `GET /screenshot.png?output=NAME` use that display. An unknown name gives `404` with `"error":"unknown_output"`.
 - A `/stream` URL with an unknown name fails its first capture, and the connection closes. A `/control` URL with an unknown name opens and closes with code 1008 and reason `unknown output`.
+- `output=all` captures every display in one picture, each placed by its `x` and `y`. Pointer input from that connection then covers the whole layout, so a drag can cross displays. On X11 `all` is the whole screen.
 - Other backends have no `"outputs"`. Their handshake fails for a URL with `output=NAME`.
 
 ### Grants

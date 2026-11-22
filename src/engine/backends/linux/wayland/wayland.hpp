@@ -73,4 +73,5 @@ struct Connection {
 };
 
 bool initializeNativeBackend(const std::string& output);
+std::vector<OutputDesc> listOutputs();
 }

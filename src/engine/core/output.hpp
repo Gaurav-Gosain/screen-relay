@@ -15,6 +15,8 @@ struct OutputDesc {
   /// The output a /stream without output=NAME captures.
   bool primary = false;
 };
+/// output=all: every output in one picture, placed by its layout position, with pointer input across all.
+constexpr const char* all_outputs = "all";
 /// Output names in a /stream query: 1 to 63 of A-Z a-z 0-9 . _ - :
 inline bool validOutputName(const std::string& name) {
   if (name.empty() || name.size() > 63) return false;
