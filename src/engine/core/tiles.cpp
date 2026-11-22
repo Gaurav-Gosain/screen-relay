@@ -283,39 +283,40 @@ bool Encoder::detectMove(const Rect& a, std::vector<Op>& ops, Stats& st) {
       }
     return int(matched.size()) >= min_tiles;
   };
-  auto estimate = [&](int& est_dx_out, int& est_dy_out) {
-  profile(cur_, true, profCur_); profile(sent_, true, profSent_);
-  int est_dx = best(profCur_, profSent_), est_dy = 0;
-  // Then exact votes: sample pixels of changed tiles; along one axis at a time, the shift that maps
-  // the most of them onto equal pixels of sent_ wins. Background pixels vote for no shift.
+  // Sample pixels of changed tiles that are not flat colour (flat colour matches anywhere), taken
+  // only when a search needs them.
   std::vector<std::pair<int, int>> samples;
-  for (int ty = a.y / tile; ty * tile < a.y + a.h; ++ty)
-    for (int tx = a.x / tile; tx * tile < a.x + a.w; ++tx) {
-      if (!dirty_[size_t(ty) * tiles_x_ + tx]) continue;
-      for (int sy = 4; sy < tile; sy += 8)
-        for (int sx = 4 + (sy & 8); sx < tile; sx += 16) {
-          const int x = tx * tile + sx, y = ty * tile + sy;
-          if (x >= width_ || y >= height_) continue;
-          if (x + 1 >= width_ || y + 1 >= height_) continue;
-          const uint8_t* p = &cur_[(size_t(y) * width_ + x) * 4];
-          // Changed, and not flat colour (it would match anywhere): differs from a neighbour.
-          if (std::memcmp(p, &sent_[(size_t(y) * width_ + x) * 4], 3) != 0 &&
-              (std::memcmp(p, p + 4, 3) != 0 || std::memcmp(p, p + size_t(width_) * 4, 3) != 0)) samples.push_back({x, y});
-        }
+  bool sampled = false;
+  auto sample = [&]() {
+    if (sampled) return samples.size() >= 16;
+    sampled = true;
+    for (int ty = a.y / tile; ty * tile < a.y + a.h; ++ty)
+      for (int tx = a.x / tile; tx * tile < a.x + a.w; ++tx) {
+        if (!dirty_[size_t(ty) * tiles_x_ + tx]) continue;
+        for (int sy = 4; sy < tile; sy += 8)
+          for (int sx = 4 + (sy & 8); sx < tile; sx += 16) {
+            const int x = tx * tile + sx, y = ty * tile + sy;
+            if (x + 1 >= width_ || y + 1 >= height_) continue;
+            const uint8_t* p = &cur_[(size_t(y) * width_ + x) * 4];
+            if (std::memcmp(p, &sent_[(size_t(y) * width_ + x) * 4], 3) != 0 &&
+                (std::memcmp(p, p + 4, 3) != 0 || std::memcmp(p, p + size_t(width_) * 4, 3) != 0)) samples.push_back({x, y});
+          }
+      }
+    if (samples.size() > 256) {  // an even spread over the whole area, not its first tiles
+      std::vector<std::pair<int, int>> spread;
+      for (size_t i = 0; i < 256; ++i) spread.push_back(samples[i * samples.size() / 256]);
+      samples.swap(spread);
     }
-  if (samples.size() < 16) return false;
-  if (samples.size() > 256) {  // an even spread over the whole area, not its first tiles
-    std::vector<std::pair<int, int>> spread;
-    for (size_t i = 0; i < 256; ++i) spread.push_back(samples[i * samples.size() / 256]);
-    samples.swap(spread);
-  }
+    return samples.size() >= 16;
+  };
   const uint32_t mask = format_ == PixelFormat::BGRA ? 0x00FFFFFFu : 0xFFFFFF00u;
   auto pixel = [&](const std::vector<uint8_t>& img, int x, int y) { uint32_t v; std::memcpy(&v, &img[(size_t(y) * width_ + x) * 4], 4); return v & mask; };
-  int last_votes = 0;
-  auto vote = [&](bool vertical, int fixed) {
-    const int range = std::min(max_shift, (vertical ? height_ : width_) - 1);
-    int best_d = 0, best_n = -1;
-    for (int d = -range; d <= range; ++d) {
+  // Exact votes along one axis, the other fixed: the shift that maps the most samples onto equal
+  // pixels of sent_ wins. votes gets the count of the winner.
+  auto vote = [&](bool vertical, int fixed, int center, int reach, int& votes) {
+    const int limit = (vertical ? height_ : width_) - 1;
+    int best_d = center, best_n = -1;
+    for (int d = std::max(-limit, center - reach); d <= std::min(limit, center + reach); ++d) {
       if (!d && !fixed) continue;
       int n = 0;
       for (const auto& [x, y] : samples) {
@@ -325,26 +326,60 @@ bool Encoder::detectMove(const Rect& a, std::vector<Op>& ops, Stats& st) {
       }
       if (n > best_n) { best_n = n; best_d = d; }
     }
-    last_votes = best_n;
+    votes = best_n;
     return best_d;
   };
-  for (int round = 0; round < 2; ++round) {
-    est_dy = vote(true, est_dx);
-    est_dx = vote(false, est_dy);
-  }
-  // Too few samples land on equal pixels: no shift explains the change.
-  if (last_votes * 4 < int(samples.size())) return false;
-  est_dx_out = est_dx; est_dy_out = est_dy;
-  return true;
+  // Refine a guess: alternate the axes inside reach of it. False when few samples agree.
+  auto refine = [&](int& ex, int& ey, int reach) {
+    int votes = 0;
+    for (int round = 0; round < 2; ++round) {
+      ey = vote(true, ex, ey, reach, votes);
+      ex = vote(false, ey, ex, reach, votes);
+    }
+    return votes * 4 >= int(samples.size());
   };
-  // The previous shift first: a drag keeps moving the same way, often by the same step.
+  // 1. The previous shift: a drag keeps moving the same way, often by the same step.
   int dx = lastMoveDx_, dy = lastMoveDy_;
-  if (!verify(dx, dy)) {
-    int est_dx = 0, est_dy = 0;
-    if (!estimate(est_dx, est_dy)) { lastMoveDx_ = lastMoveDy_ = 0; return false; }
-    dx = est_dx; dy = est_dy;
-    if (!verify(dx, dy)) { lastMoveDx_ = lastMoveDy_ = 0; return false; }
+  bool found = verify(dx, dy);
+  // 2. Near the previous shift: a drag that the ACK pace coalesces changes its step a little.
+  if (!found && (lastMoveDx_ || lastMoveDy_) && sample()) {
+    // Both axes at once within 32 px of the last shift, on 64 of the samples.
+    constexpr int reach = 32;
+    const size_t step = std::max<size_t>(1, samples.size() / 64);
+    int best_n = -1, bx = lastMoveDx_, by = lastMoveDy_, used = 0;
+    for (size_t i = 0; i < samples.size(); i += step) ++used;
+    for (int cy = lastMoveDy_ - reach; cy <= lastMoveDy_ + reach; ++cy)
+      for (int cx = lastMoveDx_ - reach; cx <= lastMoveDx_ + reach; ++cx) {
+        if (!cx && !cy) continue;
+        int n = 0;
+        for (size_t i = 0; i < samples.size(); i += step) {
+          const auto [x, y] = samples[i];
+          const int sx = x - cx, sy = y - cy;
+          if (sx < 0 || sy < 0 || sx >= width_ || sy >= height_) continue;
+          n += pixel(cur_, x, y) == pixel(sent_, sx, sy);
+        }
+        if (n > best_n) { best_n = n; bx = cx; by = cy; }
+      }
+    dx = bx; dy = by;
+    found = best_n * 4 >= used && verify(dx, dy);
   }
+  // 3. A search over the area, unless the last ones found nothing: then it waits 0, 1, 2, ... 64 frames.
+  if (!found) {
+    if (moveWait_ > 0) { --moveWait_; lastMoveDx_ = lastMoveDy_ = 0; return false; }
+    if (sample()) {
+      profile(cur_, true, profCur_); profile(sent_, true, profSent_);
+      dx = best(profCur_, profSent_); dy = 0;
+      found = refine(dx, dy, max_shift) && verify(dx, dy);
+    }
+    if (!found) {
+      // The first failure waits 0 frames, the next ones 1, 2, 4, ... 64.
+      moveWait_ = moveBackoff_;
+      moveBackoff_ = std::clamp(moveBackoff_ * 2, 1, 64);
+      lastMoveDx_ = lastMoveDy_ = 0;
+      return false;
+    }
+  }
+  moveBackoff_ = 0;
   // Usually the matched tiles are the inside of one window: then grow their box to the pixel edges
   // of the window and send one copy, which has memmove semantics on its own.
   {

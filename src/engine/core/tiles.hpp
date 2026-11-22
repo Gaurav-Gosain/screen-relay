@@ -69,6 +69,7 @@ class Encoder {
   /// A moved window: finds one 2D shift of whole tiles, adds copy ops for them, and applies them to sent_.
   bool detectMove(const Rect& area, std::vector<Op>& ops, Stats& st);
   int lastMoveDx_ = 0, lastMoveDy_ = 0;  // the previous frame's shift, tried first
+  int moveWait_ = 0, moveBackoff_ = 0;    // frames to skip the area search after it found nothing
   std::vector<int64_t> profCur_, profSent_;
   void diffTiles(std::vector<Op>& ops);
   bool solid(const Rect& r, uint8_t rgb[3]) const;
