@@ -177,23 +177,28 @@ int Encoder::detectScroll(const Rect& a, std::vector<Op>& ops) {
   // A row that repeats (blank lines, rows inside a glyph) votes for each of
   // its first few positions; only the true shift collects votes from most rows.
   constexpr size_t max_candidates = 8;
-  std::unordered_map<uint64_t, std::vector<int>> where;
-  where.reserve(size_t(a.h) * 2);
+  // Sent rows sorted by hash, then by row: the first max_candidates rows of a hash are its candidates.
+  // A sorted array and a flat vote table: no allocation for each row.
+  auto& where = scrollRows_;
+  where.resize(size_t(a.h));
   for (int i = 0; i < a.h; ++i) {
     hs[i] = hashOk_[a.y + i] ? sentHash_[a.y + i] : rowHash(sent_, a.y + i, a.x, a.x + a.w);
     hc[i] = rowHash(cur_, a.y + i, a.x, a.x + a.w);
-    auto& rows = where[hs[i]];
-    if (rows.size() < max_candidates) rows.push_back(i);
+    where[size_t(i)] = {hs[i], i};
   }
-  std::unordered_map<int, int> votes;
+  std::sort(where.begin(), where.end());
+  auto& votes = scrollVotes_;  // index dy + a.h
+  votes.assign(size_t(2 * a.h + 1), 0);
   for (int i = 0; i < a.h; ++i) {
     if (hc[i] == hs[i]) continue;
-    auto it = where.find(hc[i]);
-    if (it == where.end()) continue;
-    for (int j : it->second) ++votes[j - i];
+    auto it = std::lower_bound(where.begin(), where.end(), std::pair<uint64_t, int>{hc[i], 0});
+    for (size_t n = 0; n < max_candidates && it != where.end() && it->first == hc[i]; ++n, ++it) ++votes[size_t(it->second - i + a.h)];
   }
   int best = 0, count = 0;
-  for (auto [dy, n] : votes) if (n > count || (n == count && std::abs(dy) < std::abs(best))) { best = dy; count = n; }
+  for (int dy = -a.h; dy <= a.h; ++dy) {
+    const int n = votes[size_t(dy + a.h)];
+    if (n > count || (n && n == count && std::abs(dy) < std::abs(best))) { best = dy; count = n; }
+  }
   if (!best || count < std::max(min_run, a.h / 16)) return 0;
   // Runs of rows i where cur[i] == sent[i + best], checked byte for byte.
   std::vector<Rect> runs;

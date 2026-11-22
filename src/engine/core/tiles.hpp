@@ -7,6 +7,7 @@
 #include <cstddef>
 #include <cstdint>
 #include <string>
+#include <utility>
 #include <vector>
 
 namespace relay::tiles {
@@ -83,6 +84,8 @@ class Encoder {
   int cleanX0_ = 0, cleanX1_ = 0;
   // Row hashes of sent_ over [hashX0_, hashX1_), kept from the last frame.
   std::vector<uint64_t> sentHash_, curHash_;
+  std::vector<std::pair<uint64_t, int>> scrollRows_;  // detectScroll scratch, kept to save allocations
+  std::vector<int> scrollVotes_;
   std::vector<uint8_t> hashOk_;
   int hashX0_ = -1, hashX1_ = -1;
   Rect hashArea_{0, 0, 0, 0};
