@@ -259,6 +259,8 @@ struct CaptureEncoder::Impl {
   uint64_t key_requests = 0;
   /// Counts input events; the capture runs at full rate again after each one.
   uint64_t input_events = 0;
+  /// Input that should change the picture (a key or button press, a wheel step, text): input_to_frame counts these.
+  uint64_t measured_inputs = 0;
   CaptureStats counters;
   void wake() { wake_event.signal(); }
   // Input to the first changed frame sent after it, the last 64 samples, in microseconds.
@@ -313,7 +315,7 @@ struct CaptureEncoder::Impl {
       constexpr auto quiet_interval = std::chrono::milliseconds(100);
       auto last_change = started;
       auto quiet_until = Clock::time_point::min();
-      uint64_t inputs_seen = 0;
+      uint64_t inputs_seen = 0, measured_seen = 0;
       bool input_seen = false;  // input arrived since the last loop: tell the source
       Clock::time_point input_at{};  // first input not yet followed by a changed frame
       unsigned cascade_frames = 0;
@@ -347,7 +349,10 @@ struct CaptureEncoder::Impl {
           if (input_events != inputs_seen) {
             inputs_seen = input_events; last_change = Clock::now(); quiet_until = Clock::time_point::min();
             input_seen = true;
-            if (input_at == Clock::time_point{}) input_at = last_change;
+          }
+          if (measured_inputs != measured_seen) {
+            measured_seen = measured_inputs;
+            if (input_at == Clock::time_point{}) input_at = Clock::now();
           }
           key_request = tiles_mode && keys_wanted != keys_done;
           gen = generation; rev = revision; rate = bitrate;
@@ -448,7 +453,8 @@ struct CaptureEncoder::Impl {
                 keys_done = keys_wanted;
                 last_publish = Clock::now();
                 if (input_at != Clock::time_point{} && !key) {
-                  noteInputLatency(last_publish - input_at);
+                  // Over 1 s means the input changed nothing on screen: no sample.
+                  if (last_publish - input_at < std::chrono::seconds(1)) noteInputLatency(last_publish - input_at);
                   input_at = {};
                 }
               }
@@ -672,6 +678,7 @@ void CaptureEncoder::beginSession(uint32_t generation, bool tiles, unsigned tile
     i.sequence = 0;
     i.acknowledged = 0;
     i.window = 1; i.bitrate = i.settings.start_bitrate; i.paused = false; i.admit_until_us = 0;
+    i.input_latency_count = 0;
     i.active = true;
     ++i.revision;
     i.wake();
@@ -685,10 +692,11 @@ std::pair<double, double> CaptureEncoder::inputLatencyMs() const {
   std::sort(sorted.begin(), sorted.begin() + n);
   return {sorted[n / 2] / 1000.0, sorted[std::min(n - 1, n * 99 / 100)] / 1000.0};
 }
-void CaptureEncoder::inputActivity() {
+void CaptureEncoder::inputActivity(bool measure) {
   auto& i = *impl_;
   std::lock_guard<std::mutex> lock(i.mutex);
   ++i.input_events;
+  if (measure) ++i.measured_inputs;
   i.wake();
 }
 void CaptureEncoder::requestKeyframe(uint32_t generation) {

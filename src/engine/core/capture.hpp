@@ -53,7 +53,7 @@ class CaptureEncoder {
   void beginSession(uint32_t generation, bool tiles = false, unsigned tiles_inflight = 1,
                     unsigned tiles_width = 0, unsigned tiles_height = 0);
   /** Tells the capture that input arrived, so it leaves its quiet rate at once. */
-  void inputActivity();
+  void inputActivity(bool measure = false);
   /** Input to the first changed frame sent after it, p50 and p99 in ms over the last 64; -1 before any. */
   std::pair<double, double> inputLatencyMs() const;
   /** Makes the next tiles frame of this session a keyframe. */

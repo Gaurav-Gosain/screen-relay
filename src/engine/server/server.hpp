@@ -108,7 +108,7 @@ struct Server {
   int startStream(lws* wsi, Socket socket, const ConnectionPlan& plan, bool clipboardNotices, bool tiles, unsigned tiles_inflight, unsigned tiles_width, unsigned tiles_height, const std::string& output = {});
   void release();
   /// Tells every capture that input arrived.
-  void noteInput();
+  void noteInput(const InputEvent& event);
   void endStream(lws* wsi);
   void endControl();
   void end();

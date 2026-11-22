@@ -177,8 +177,10 @@ int Server::startStream(lws* wsi, Socket socket, const ConnectionPlan& plan, boo
   return 0;
 }
 void Server::release() { if (input) input->releaseAll(); }
-void Server::noteInput() {
-  for (auto& stream : streams) if (stream && stream->viewer) stream->capture.inputActivity();
+void Server::noteInput(const InputEvent& event) {
+  // Key and button presses, wheel steps and text should change the picture; input_to_frame times those.
+  const bool measure = event.type == 1 || event.type == 4 || event.type == 6 || event.type == 8;
+  for (auto& stream : streams) if (stream && stream->viewer) stream->capture.inputActivity(measure);
 }
 void Server::endStream(lws* wsi) {
   for (auto slot = streams.begin(); slot != streams.end(); ++slot) {
@@ -238,8 +240,9 @@ bool Server::controlMessage() {
   uint32_t gen = 0, seq = 0;
   if (!envelope(b, gen, seq) || b[5] != 3 || b.size() != 36 || !seq || gen != control_generation || replies.size() >= 32) return false;
   auto reply = std::make_shared<ControlReply>();
-  noteInput();
-  reply->seq = seq; reply->status = input->apply(inputEvent(b.data()+20));
+  const auto event = inputEvent(b.data()+20);
+  noteInput(event);
+  reply->seq = seq; reply->status = input->apply(event);
   replies.push_back(reply);
   input->fence(std::make_shared<ReplyFence>(wake, [reply](bool, size_t) { reply->ready.store(true, std::memory_order_release); }));
   lws_callback_on_writable(control); return true;
@@ -265,8 +268,9 @@ bool Server::streamMessage(Stream& stream) {
   }
   if (b[5] != 3 || b.size() != 36 || seq || gen != stream.generation) return false;
   if (input_viewer != stream.viewer) return true;
-  noteInput();
-  return input->apply(inputEvent(b.data()+20)) != InputStatus::invalid;
+  const auto event = inputEvent(b.data()+20);
+  noteInput(event);
+  return input->apply(event) != InputStatus::invalid;
 }
 void Server::Stream::updateFlow([[maybe_unused]] bool proxy) {
   if (viewer && !lws_partial_buffered(viewer)) buffered_stream_bytes = 0;
@@ -507,8 +511,11 @@ int inputResponse(lws* wsi, HttpResponse* response, Server* s) {
   if (!s->input->selectOutput(output)) return errorResponse(wsi, response, HTTP_STATUS_NOT_FOUND, "unknown_output");
   size_t index = 0;
   auto status = InputStatus::ok;
-  s->noteInput();
-  for (; index < count && status == InputStatus::ok; ++index) status = s->input->apply(inputEvent(response->input + index * 16));
+  for (; index < count && status == InputStatus::ok; ++index) {
+    const auto event = inputEvent(response->input + index * 16);
+    s->noteInput(event);
+    status = s->input->apply(event);
+  }
   s->release();
   return s->deferInput(wsi, status, index, status == InputStatus::ok ? index : index - 1);
 }
