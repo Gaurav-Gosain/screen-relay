@@ -88,6 +88,8 @@ struct CaptureState {
   std::vector<uint8_t> image;
   std::vector<MacCapture*> sources;
   bool haveFrame = false;
+  /// Scaled frames whose raw dirty rects were logged, to learn which space ScreenCaptureKit uses for them.
+  int dirtyLogs = 0;
   std::string failure;
 
   void fail(const std::string& message);
@@ -360,6 +362,17 @@ void CaptureState::frame(CMSampleBufferRef sample) {
   // The tiles encoder diffs the scaled frame, so only changed pixels go out anyway.
   const bool scaled = outWidth != display.width || outHeight != display.height;
   bool full = scaled || !dirtyRects(info[SCStreamFrameInfoDirtyRects], outWidth, outHeight, rects);
+  if (scaled && dirtyLogs < 8) {
+    // Unclipped extents: rects that reach past the output size are in display space, not output space.
+    std::vector<DamageRect> raw;
+    if (dirtyRects(info[SCStreamFrameInfoDirtyRects], 1 << 20, 1 << 20, raw)) {
+      int right = 0, bottom = 0;
+      for (const auto& rect : raw) right = std::max(right, rect.x + rect.width), bottom = std::max(bottom, rect.y + rect.height);
+      std::fprintf(stderr, "capture: scaled frame %dx%d of display %dx%d has %zu dirty rects that reach %dx%d\n",
+                   outWidth, outHeight, display.width, display.height, raw.size(), right, bottom);
+      ++dirtyLogs;
+    }
+  }
   for (const auto& rect : rects)
     if (rect.x == 0 && rect.y == 0 && rect.width == outWidth && rect.height == outHeight) full = true;
   PixelLock pixelsLock(buffer);

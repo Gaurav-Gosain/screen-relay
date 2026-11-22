@@ -1,7 +1,7 @@
 // Minimal tiles client for tests: connects to /stream?view=1&codec=tiles,
 // applies type 8 frames to an RGB buffer, ACKs each one, and can compare the
 // buffer with /screenshot.png. Usage:
-//   node tests/e2e/tiles-client.mjs http://127.0.0.1:8080 SECONDS [--keyframe-at S] [--ack-delay MS] [--inflight K] [--size WxH] [--check]
+//   node tests/e2e/tiles-client.mjs http://127.0.0.1:8080 SECONDS [--keyframe-at S] [--ack-delay MS] [--inflight K] [--size WxH] [--clipboard] [--check]
 // Prints one JSON line with frames, bytes, latency and the check result.
 import zlib from 'node:zlib';
 
@@ -15,6 +15,8 @@ const ackDelay = rest.includes('--ack-delay') ? Number(rest[rest.indexOf('--ack-
 const inflight = rest.includes('--inflight') ? Number(rest[rest.indexOf('--inflight') + 1]) : 1;
 // --size WxH asks the engine to scale by a whole factor (size=WxH); --check then box-filters the screenshot.
 const size = rest.includes('--size') ? rest[rest.indexOf('--size') + 1] : '';
+// --clipboard opens a control stream with clipboard=1, counts type 7 notices and reads GET /clipboard after each one.
+const clipboard = rest.includes('--clipboard');
 const token = process.env.SCREEN_RELAY_TOKEN;
 
 const u16 = (b, o) => (b[o] << 8) | b[o + 1];
@@ -87,8 +89,8 @@ function decodePng(buf) {
   return { w, h, rgb: out };
 }
 
-const stats = { frames: 0, keyframes: 0, bytes: 0, copies: 0, maxBytes: 0, lat: [], errors: [] };
-const ws = new WebSocket(base.replace(/^http/, 'ws') + '/stream?view=1&codec=tiles' + (inflight > 1 ? '&tiles_inflight=' + inflight : '') + (size ? '&size=' + size : ''), token ? ['nsl1', 'bearer.' + token] : ['nsl1']);
+const stats = { frames: 0, keyframes: 0, bytes: 0, copies: 0, maxBytes: 0, lat: [], errors: [], notices: 0, clipboard: [] };
+const ws = new WebSocket(base.replace(/^http/, 'ws') + (clipboard ? '/stream?take=1&clipboard=1&codec=tiles' : '/stream?view=1&codec=tiles') + (inflight > 1 ? '&tiles_inflight=' + inflight : '') + (size ? '&size=' + size : ''), token ? ['nsl1', 'bearer.' + token] : ['nsl1']);
 ws.binaryType = 'arraybuffer';
 let gen = 0, keySent = false;
 const started = Date.now();
@@ -96,6 +98,12 @@ ws.onmessage = (e) => {
   const m = new Uint8Array(e.data);
   const type = m[5]; gen = u32(m, 8);
   const seq = u32(m, 12);
+  if (type === 7) {
+    stats.notices++;
+    fetch(base + '/clipboard', { headers: token ? { Authorization: 'Bearer ' + token } : {} })
+      .then((r) => r.text()).then((t) => stats.clipboard.push(t), (err) => stats.errors.push('clipboard: ' + err));
+    return;
+  }
   if (type !== 8) return;
   try {
     const t0 = monoUs();
@@ -135,4 +143,5 @@ const lat = stats.lat.sort((a, b) => a - b);
 const q = (f) => (lat.length ? Math.round(lat[Math.min(lat.length - 1, Math.floor(f * lat.length))] / 100) / 10 : null);
 console.log(JSON.stringify({ seconds, frames: stats.frames, fps: +(stats.frames / seconds).toFixed(1), keyframes: stats.keyframes,
   kb: Math.round(stats.bytes / 1024), avg_bytes: Math.round(stats.bytes / Math.max(1, stats.frames)), max_bytes: stats.maxBytes,
-  copies: stats.copies, latency_ms_p50: q(0.5), latency_ms_p99: q(0.99), errors: stats.errors.slice(0, 5), lossless }));
+  copies: stats.copies, latency_ms_p50: q(0.5), latency_ms_p99: q(0.99), errors: stats.errors.slice(0, 5), lossless,
+  ...(clipboard ? { notices: stats.notices, clipboard: stats.clipboard } : {}) }));
