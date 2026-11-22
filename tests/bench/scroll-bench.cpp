@@ -93,8 +93,44 @@ void run(const char* name, int w, int h, int x0, int x1, int frames, int lines) 
 }
 }  // namespace
 
+/// A 900x600 window that moves 7 px right and 3 px down a frame over a textured desktop.
+void drag(int frames) {
+  const int w = 1920, h = 1080, ww = 900, wh = 600;
+  std::mt19937 random(5);
+  std::vector<uint8_t> desk(size_t(w) * h * 4), win(size_t(ww) * wh * 4), now, before;
+  for (int y = 0; y < h; ++y)
+    for (int x = 0; x < w; ++x) { uint8_t* p = &desk[(size_t(y) * w + x) * 4]; p[0] = uint8_t(x / 7 + y / 5); p[1] = uint8_t(y / 3); p[2] = uint8_t((x ^ y) >> 3); p[3] = 255; }
+  for (auto& b : win) b = uint8_t(random() % 3 ? 235 : random());
+  auto draw = [&](int wx, int wy) {
+    now = desk;
+    for (int y = 0; y < wh; ++y) std::memcpy(&now[(size_t(wy + y) * w + wx) * 4], &win[size_t(y) * ww * 4], size_t(ww) * 4);
+  };
+  tiles::Encoder encoder(w, h);
+  std::vector<uint8_t> out;
+  draw(100, 100);
+  encoder.update(FrameView{now.data(), w * 4, w, h, PixelFormat::BGRA}, nullptr);
+  encoder.encode(true, 0, out);
+  before = now;
+  double ms = 0;
+  size_t bytes = 0;
+  std::vector<DamageRect> rects;
+  for (int f = 1; f <= frames; ++f) {
+    draw(100 + (f * 7) % 800, 100 + (f * 3) % 300);
+    const auto t0 = Clock::now();
+    rects.clear();
+    relay::changedBands(now.data(), before.data(), w, h, w * 4, rects);
+    encoder.update(FrameView{now.data(), w * 4, w, h, PixelFormat::BGRA}, &rects);
+    encoder.encode(false, uint64_t(f), out);
+    ms += std::chrono::duration<double, std::milli>(Clock::now() - t0).count();
+    bytes += out.size();
+    before = now;
+  }
+  std::printf("%-24s %.2f ms a frame, %4.1f %% of a core at 60 fps; %zu KB a frame\n", "900x600 window drag", ms / frames, ms / frames * 6, bytes / frames / 1024);
+}
+
 int main(int argc, char** argv) {
   const int frames = argc > 1 ? std::atoi(argv[1]) : 120, lines = argc > 2 ? std::atoi(argv[2]) : 1;
   run("1920x1080 full terminal", 1920, 1080, 0, 1920, frames, lines);
   run("1920x1080 half terminal", 1920, 1080, 960, 1920, frames, lines);
+  drag(frames);
 }

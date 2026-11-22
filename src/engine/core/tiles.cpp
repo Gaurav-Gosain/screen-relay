@@ -227,6 +227,189 @@ int Encoder::detectScroll(const Rect& a, std::vector<Op>& ops) {
   return best;
 }
 
+bool Encoder::detectMove(const Rect& a, std::vector<Op>& ops, Stats& st) {
+  constexpr int max_shift = 600, min_tiles = 4;
+  if (a.w < 2 * tile || a.h < 2 * tile) return false;
+  // Column sums do not change when content moves up or down inside the area, and row sums do not
+  // change when it moves sideways, so each gives one axis of the shift. Compare their slopes,
+  // which follow the edges of the moved window and not the flat colours.
+  auto profile = [&](const std::vector<uint8_t>& img, bool columns, std::vector<int64_t>& p) {
+    const int n = columns ? a.w : a.h;
+    p.assign(size_t(n), 0);
+    for (int y = a.y; y < a.y + a.h; ++y) {
+      const uint8_t* q = &img[(size_t(y) * width_ + a.x) * 4];
+      if (columns) {
+        for (int x = 0; x < a.w; ++x, q += 4) p[size_t(x)] += q[0] + q[1] + q[2];
+      } else {
+        int64_t s = 0;
+        for (int x = 0; x < a.w; ++x, q += 4) s += q[0] + q[1] + q[2];
+        p[size_t(y - a.y)] = s;
+      }
+    }
+  };
+  auto best = [&](const std::vector<int64_t>& c, const std::vector<int64_t>& s) {
+    const int n = int(c.size()), range = std::min(max_shift, n - tile);
+    int64_t best_cost = -1; int best_d = 0;
+    for (int d = -range; d <= range; ++d) {
+      int64_t cost = 0; int count = 0;
+      for (int i = std::max(1, d + 1); i < std::min(n, n + d); ++i) {
+        const int64_t dc = c[size_t(i)] - c[size_t(i - 1)], ds = s[size_t(i - d)] - s[size_t(i - d - 1)];
+        cost += dc > ds ? dc - ds : ds - dc; ++count;
+      }
+      if (count < n / 4) continue;
+      cost = cost * 1024 / count;
+      if (best_cost < 0 || cost < best_cost) { best_cost = cost; best_d = d; }
+    }
+    return best_d;
+  };
+  // Whole tiles of the area whose pixels equal sent_ shifted by (dx, dy). Every match is exact.
+  std::vector<std::pair<int, int>> matched;
+  auto verify = [&](int dx, int dy) {
+    matched.clear();
+    if (!dx && !dy) return false;
+    for (int ty = a.y / tile; ty * tile < a.y + a.h; ++ty)
+      for (int tx = a.x / tile; tx * tile < a.x + a.w; ++tx) {
+        if (!dirty_[size_t(ty) * tiles_x_ + tx]) continue;
+        const int x0 = tx * tile, y0 = ty * tile, x1 = std::min(width_, x0 + tile), y1 = std::min(height_, y0 + tile);
+        if (x0 - dx < 0 || y0 - dy < 0 || x1 - dx > width_ || y1 - dy > height_) continue;
+        const size_t n = size_t(x1 - x0) * 4;
+        bool same = true, unchanged = true;
+        for (int y = y0; y < y1 && same; ++y) {
+          const uint8_t* c = &cur_[(size_t(y) * width_ + x0) * 4];
+          same = std::memcmp(c, &sent_[(size_t(y - dy) * width_ + x0 - dx) * 4], n) == 0;
+          if (unchanged) unchanged = std::memcmp(c, &sent_[(size_t(y) * width_ + x0) * 4], n) == 0;
+        }
+        if (same && !unchanged) matched.push_back({tx, ty});
+      }
+    return int(matched.size()) >= min_tiles;
+  };
+  auto estimate = [&](int& est_dx_out, int& est_dy_out) {
+  profile(cur_, true, profCur_); profile(sent_, true, profSent_);
+  int est_dx = best(profCur_, profSent_), est_dy = 0;
+  // Then exact votes: sample pixels of changed tiles; along one axis at a time, the shift that maps
+  // the most of them onto equal pixels of sent_ wins. Background pixels vote for no shift.
+  std::vector<std::pair<int, int>> samples;
+  for (int ty = a.y / tile; ty * tile < a.y + a.h; ++ty)
+    for (int tx = a.x / tile; tx * tile < a.x + a.w; ++tx) {
+      if (!dirty_[size_t(ty) * tiles_x_ + tx]) continue;
+      for (int sy = 4; sy < tile; sy += 8)
+        for (int sx = 4 + (sy & 8); sx < tile; sx += 16) {
+          const int x = tx * tile + sx, y = ty * tile + sy;
+          if (x >= width_ || y >= height_) continue;
+          if (x + 1 >= width_ || y + 1 >= height_) continue;
+          const uint8_t* p = &cur_[(size_t(y) * width_ + x) * 4];
+          // Changed, and not flat colour (it would match anywhere): differs from a neighbour.
+          if (std::memcmp(p, &sent_[(size_t(y) * width_ + x) * 4], 3) != 0 &&
+              (std::memcmp(p, p + 4, 3) != 0 || std::memcmp(p, p + size_t(width_) * 4, 3) != 0)) samples.push_back({x, y});
+        }
+    }
+  if (samples.size() < 16) return false;
+  if (samples.size() > 256) {  // an even spread over the whole area, not its first tiles
+    std::vector<std::pair<int, int>> spread;
+    for (size_t i = 0; i < 256; ++i) spread.push_back(samples[i * samples.size() / 256]);
+    samples.swap(spread);
+  }
+  const uint32_t mask = format_ == PixelFormat::BGRA ? 0x00FFFFFFu : 0xFFFFFF00u;
+  auto pixel = [&](const std::vector<uint8_t>& img, int x, int y) { uint32_t v; std::memcpy(&v, &img[(size_t(y) * width_ + x) * 4], 4); return v & mask; };
+  int last_votes = 0;
+  auto vote = [&](bool vertical, int fixed) {
+    const int range = std::min(max_shift, (vertical ? height_ : width_) - 1);
+    int best_d = 0, best_n = -1;
+    for (int d = -range; d <= range; ++d) {
+      if (!d && !fixed) continue;
+      int n = 0;
+      for (const auto& [x, y] : samples) {
+        const int sx = x - (vertical ? fixed : d), sy = y - (vertical ? d : fixed);
+        if (sx < 0 || sy < 0 || sx >= width_ || sy >= height_) continue;
+        n += pixel(cur_, x, y) == pixel(sent_, sx, sy);
+      }
+      if (n > best_n) { best_n = n; best_d = d; }
+    }
+    last_votes = best_n;
+    return best_d;
+  };
+  for (int round = 0; round < 2; ++round) {
+    est_dy = vote(true, est_dx);
+    est_dx = vote(false, est_dy);
+  }
+  // Too few samples land on equal pixels: no shift explains the change.
+  if (last_votes * 4 < int(samples.size())) return false;
+  est_dx_out = est_dx; est_dy_out = est_dy;
+  return true;
+  };
+  // The previous shift first: a drag keeps moving the same way, often by the same step.
+  int dx = lastMoveDx_, dy = lastMoveDy_;
+  if (!verify(dx, dy)) {
+    int est_dx = 0, est_dy = 0;
+    if (!estimate(est_dx, est_dy)) { lastMoveDx_ = lastMoveDy_ = 0; return false; }
+    dx = est_dx; dy = est_dy;
+    if (!verify(dx, dy)) { lastMoveDx_ = lastMoveDy_ = 0; return false; }
+  }
+  // Usually the matched tiles are the inside of one window: then grow their box to the pixel edges
+  // of the window and send one copy, which has memmove semantics on its own.
+  {
+    int x0 = width_, y0 = height_, x1 = 0, y1 = 0;
+    for (const auto& [tx, ty] : matched) {
+      x0 = std::min(x0, tx * tile); y0 = std::min(y0, ty * tile);
+      x1 = std::max(x1, std::min(width_, tx * tile + tile)); y1 = std::max(y1, std::min(height_, ty * tile + tile));
+    }
+    auto rowMatches = [&](int y, int l, int r) {
+      return y - dy >= 0 && y - dy < height_ && l - dx >= 0 && r - dx <= width_ &&
+             std::memcmp(&cur_[(size_t(y) * width_ + l) * 4], &sent_[(size_t(y - dy) * width_ + l - dx) * 4], size_t(r - l) * 4) == 0;
+    };
+    auto columnMatches = [&](int x, int t, int b) {
+      if (x - dx < 0 || x - dx >= width_ || t - dy < 0 || b - dy > height_) return false;
+      for (int y = t; y < b; ++y)
+        if (std::memcmp(&cur_[(size_t(y) * width_ + x) * 4], &sent_[(size_t(y - dy) * width_ + x - dx) * 4], 3) != 0) return false;
+      return true;
+    };
+    bool whole = true;
+    for (int y = y0; y < y1 && whole; ++y) whole = rowMatches(y, x0, x1);
+    if (whole) {
+      for (bool grew = true; grew;) {
+        grew = false;
+        if (x0 > 0 && columnMatches(x0 - 1, y0, y1)) { --x0; grew = true; }
+        if (x1 < width_ && columnMatches(x1, y0, y1)) { ++x1; grew = true; }
+        if (y0 > 0 && rowMatches(y0 - 1, x0, x1)) { --y0; grew = true; }
+        if (y1 < height_ && rowMatches(y1, x0, x1)) { ++y1; grew = true; }
+      }
+      const Rect r{x0, y0, x1 - x0, y1 - y0};
+      Op op{op_copy, r, r.x - dx, r.y - dy, {0, 0, 0}};
+      applyCopy(op);
+      ops.push_back(op);
+      for (int y = r.y; y < r.y + r.h; ++y) hashOk_[size_t(y)] = 0;
+      markDirty(r.x, r.y, r.w, r.h);
+      lastMoveDx_ = dx; lastMoveDy_ = dy;
+      st.move_dx = dx; st.move_dy = dy;
+      return true;
+    }
+  }
+  // Copies run so that no copy reads pixels an earlier copy of this frame wrote: tile rows against
+  // the vertical shift, and within a row against the horizontal shift. Side by side tiles merge.
+  std::sort(matched.begin(), matched.end(), [&](const auto& p, const auto& q) {
+    if (p.second != q.second) return dy > 0 ? p.second > q.second : p.second < q.second;
+    return dx > 0 ? p.first > q.first : p.first < q.first;
+  });
+  std::vector<Rect> runs;
+  for (const auto& [tx, ty] : matched) {
+    const int x0 = tx * tile, y0 = ty * tile, w = std::min(width_, x0 + tile) - x0, h = std::min(height_, y0 + tile) - y0;
+    if (!runs.empty()) {
+      auto& r = runs.back();
+      if (r.y == y0 && r.h == h && (r.x + r.w == x0 || x0 + w == r.x)) { r = {std::min(r.x, x0), y0, r.w + w, h}; continue; }
+    }
+    runs.push_back({x0, y0, w, h});
+  }
+  for (const auto& r : runs) {
+    Op op{op_copy, r, r.x - dx, r.y - dy, {0, 0, 0}};
+    applyCopy(op);
+    ops.push_back(op);
+    for (int y = r.y; y < r.y + r.h; ++y) hashOk_[size_t(y)] = 0;
+  }
+  lastMoveDx_ = dx; lastMoveDy_ = dy;
+  st.move_dx = dx; st.move_dy = dy;
+  return true;
+}
+
 void Encoder::applyCopy(const Op& op) { copyRect(sent_, width_, 4, op.sx, op.sy, op.r.x, op.r.y, op.r.w, op.r.h); }
 
 bool Encoder::solid(const Rect& r, uint8_t rgb[3]) const {
@@ -326,7 +509,12 @@ bool Encoder::encode(bool keyframe, uint64_t pts_us, std::vector<uint8_t>& out, 
       for (int tx = 0; tx < tiles_x_; ++tx)
         if (dirty_[size_t(ty) * tiles_x_ + tx]) { tx0 = std::min(tx0, tx); tx1 = std::max(tx1, tx); ty0 = std::min(ty0, ty); ty1 = std::max(ty1, ty); }
     const Rect area{tx0 * tile, ty0 * tile, std::min(width_, (tx1 + 1) * tile) - tx0 * tile, std::min(height_, (ty1 + 1) * tile) - ty0 * tile};
+    // A scroll first. When its copies cover under half of the area, look for a moved window too;
+    // its copies then work on the buffer after the scroll copies, as the client applies them.
     st.scroll_dy = detectScroll(area, ops);
+    int scrolled = 0;
+    for (const auto& op : ops) if (op.kind == op_copy) scrolled += op.r.h;
+    if (scrolled * 2 < area.h) detectMove(area, ops, st);
   }
   const size_t copies = ops.size();
   diffTiles(ops);

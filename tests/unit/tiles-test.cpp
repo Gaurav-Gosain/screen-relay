@@ -6,6 +6,8 @@
 #include <iostream>
 #include <random>
 #include <string>
+#include <algorithm>
+#include <tuple>
 #include <vector>
 
 using relay::DamageRect;
@@ -104,6 +106,78 @@ int main() {
       // A strip of |step| rows plus tile edges, never the whole band.
       assert(st.raw_bytes <= size_t(d.w) * 3 * size_t(std::abs(step) + 2 * tiles::tile));
     }
+  }
+  // A window moves in 2D over a patterned desktop, with whole-output damage as on Hyprland:
+  // the window goes out as copies, only the desktop it uncovers and its edges as pixels.
+  {
+    Desk d(1280, 800), win(500, 360);
+    paintText(win, 0, win.h, 50, 18);
+    auto place = [&](int wx, int wy) {
+      for (int y = 0; y < d.h; ++y)
+        for (int x = 0; x < d.w; ++x) d.set(x, y, uint8_t(x * 3 + y), uint8_t(y * 5 + x / 7), uint8_t((x ^ y) & 0xff));
+      for (int y = 0; y < win.h; ++y)
+        std::memcpy(&d.bgra[(size_t(wy + y) * d.w + wx) * 4], &win.bgra[size_t(y) * win.w * 4], size_t(win.w) * 4);
+    };
+    tiles::Encoder enc(d.w, d.h);
+    Client c;
+    std::vector<uint8_t> out;
+    int wx = 100, wy = 120;
+    place(wx, wy);
+    enc.update(d.view(), nullptr); enc.encode(true, 1, out); c.take(out);
+    const int moves[][2] = {{37, 0}, {0, -23}, {61, 45}, {-80, 12}, {5, 5}, {5, 5}, {-140, -90}, {300, 0}};
+    for (const auto& m : moves) {
+      wx += m[0]; wy += m[1];
+      place(wx, wy);
+      std::vector<DamageRect> dmg{{0, 0, d.w, d.h}};
+      enc.update(d.view(), &dmg);
+      tiles::Stats st;
+      assert(enc.encode(false, 2, out, &st));
+      c.take(out);
+      assert(c.rgb == d.rgb());
+      assert(st.copies >= 1);
+      assert(st.move_dx == m[0] && st.move_dy == m[1]);
+      // Pixels go out only for the desktop the window uncovered, plus a margin for tile edges.
+      const size_t overlap = size_t(std::max(0, win.w - std::abs(m[0]))) * size_t(std::max(0, win.h - std::abs(m[1])));
+      const size_t uncovered = size_t(win.w) * win.h - overlap;
+      assert(st.raw_bytes <= (uncovered + size_t(win.w + win.h) * 16) * 3 * 13 / 10);
+    }
+  }
+  // Random moves, the window partly off screen, two windows: every frame must stay exact.
+  {
+    Desk d(960, 640), a(300, 220), b(180, 260);
+    paintText(a, 0, a.h, 7, 16); paintText(b, 0, b.h, 90, 14);
+    auto place = [&](int ax, int ay, int bx, int by) {
+      for (int y = 0; y < d.h; ++y)
+        for (int x = 0; x < d.w; ++x) d.set(x, y, uint8_t(x / 3 + y), uint8_t(y * 7), uint8_t(x * 5 ^ y));
+      for (const auto& [w, wx, wy] : {std::tuple<const Desk&, int, int>{a, ax, ay}, std::tuple<const Desk&, int, int>{b, bx, by}})
+        for (int y = 0; y < w.h; ++y)
+          for (int x = 0; x < w.w; ++x) {
+            const int X = wx + x, Y = wy + y;
+            if (X < 0 || Y < 0 || X >= d.w || Y >= d.h) continue;
+            std::memcpy(&d.bgra[(size_t(Y) * d.w + X) * 4], &w.bgra[(size_t(y) * w.w + x) * 4], 4);
+          }
+    };
+    std::mt19937 rng(11);
+    tiles::Encoder enc(d.w, d.h);
+    Client c;
+    std::vector<uint8_t> out;
+    int ax = 50, ay = 60, bx = 600, by = 300;
+    place(ax, ay, bx, by);
+    enc.update(d.view(), nullptr); enc.encode(true, 1, out); c.take(out);
+    size_t copies = 0;
+    for (int i = 0; i < 40; ++i) {
+      const int mx = int(rng() % 161) - 80, my = int(rng() % 121) - 60;
+      ax = std::clamp(ax + mx, -200, d.w - 60); ay = std::clamp(ay + my, -150, d.h - 60);
+      if (i % 3 == 0) { bx += mx; by += my; }  // sometimes both windows move together
+      place(ax, ay, bx, by);
+      std::vector<DamageRect> dmg{{0, 0, d.w, d.h}};
+      enc.update(d.view(), &dmg);
+      tiles::Stats st;
+      if (enc.encode(false, 3 + i, out, &st)) c.take(out);
+      assert(c.rgb == d.rgb());
+      copies += st.copies;
+    }
+    assert(copies >= 20);
   }
   // Typing: one glyph changes, one small rectangle goes out.
   {

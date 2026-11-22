@@ -25,6 +25,7 @@ struct Stats {
   size_t copies = 0, pixel_rects = 0, fills = 0;
   size_t raw_bytes = 0, blob_bytes = 0, payload_bytes = 0;
   int scroll_dy = 0;
+  int move_dx = 0, move_dy = 0;  // shift of the moved area, when the frame has 2D copies
   bool split = false;
 };
 
@@ -65,6 +66,10 @@ class Encoder {
   struct Op { OpKind kind; Rect r; int sx, sy; uint8_t rgb[3]; };
   void markDirty(int x, int y, int w, int h);
   int detectScroll(const Rect& area, std::vector<Op>& ops);
+  /// A moved window: finds one 2D shift of whole tiles, adds copy ops for them, and applies them to sent_.
+  bool detectMove(const Rect& area, std::vector<Op>& ops, Stats& st);
+  int lastMoveDx_ = 0, lastMoveDy_ = 0;  // the previous frame's shift, tried first
+  std::vector<int64_t> profCur_, profSent_;
   void diffTiles(std::vector<Op>& ops);
   bool solid(const Rect& r, uint8_t rgb[3]) const;
   void applyCopy(const Op& op);
