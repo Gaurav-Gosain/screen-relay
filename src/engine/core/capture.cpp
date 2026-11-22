@@ -250,6 +250,7 @@ struct CaptureEncoder::Impl {
   void wake() { wake_event.signal(); }
   void run() {
     try {
+      capture_frame_rate.store(settings.fps);
       auto source = source_factory();
       require(bool(source), "capture source factory returned null");
       require(validWaitHandle(source->fd()), "invalid capture source fd");

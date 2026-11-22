@@ -1,4 +1,5 @@
 #pragma once
+#include <atomic>
 #include <cstdint>
 #include <functional>
 #include <memory>
@@ -21,6 +22,8 @@ inline void requireSurfaceSize(int width, int height) {
                              std::to_string(max_frame_width) + ", height even and " +
                              std::to_string(min_frame_height) + " to " + std::to_string(max_frame_height));
 }
+/// Highest frame rate the encoder uses (--fps); 0 means unknown. Sources that pace themselves, like ScreenCaptureKit, read it when they start.
+inline std::atomic<unsigned> capture_frame_rate{0};
 enum class PixelFormat { BGRA, ARGB };
 // CPU-accessible pixels remain valid until the next capture or source destruction.
 // GPU zero-copy would require a separate encoder interface.

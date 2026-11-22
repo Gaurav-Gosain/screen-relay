@@ -14,6 +14,7 @@ void put32(std::vector<uint8_t>& out, uint32_t v) { for (int s = 24; s >= 0; s -
 void put64(std::vector<uint8_t>& out, uint64_t v) { for (int s = 56; s >= 0; s -= 8) out.push_back(uint8_t(v >> s)); }
 unsigned get16(const uint8_t* p) { return unsigned(p[0]) << 8 | p[1]; }
 uint32_t get32(const uint8_t* p) { return uint32_t(p[0]) << 24 | uint32_t(p[1]) << 16 | uint32_t(p[2]) << 8 | p[3]; }
+inline uint64_t load64(const uint8_t* p) { uint64_t v; std::memcpy(&v, p, 8); return v; }
 inline uint64_t mix(uint64_t h) { h ^= h >> 31; h *= 0x9E3779B97F4A7C15ull; h ^= h >> 29; return h; }
 // Rows copy with memmove semantics: src and dst can overlap.
 void copyRect(std::vector<uint8_t>& img, int width, int px, int sx, int sy, int dx, int dy, int w, int h) {
@@ -256,8 +257,11 @@ void Encoder::diffTiles(std::vector<Op>& ops) {
         const size_t n = size_t(x1 - x0) * 4;
         if (std::memcmp(c, s, n) == 0) continue;
         by0 = std::min(by0, y); by1 = y + 1;
+        // Trim equal bytes from both ends, 8 bytes at a time, then byte by byte.
         size_t l = 0, r = n;
+        while (l + 8 <= n && load64(c + l) == load64(s + l)) l += 8;
         while (l < n && c[l] == s[l]) ++l;
+        while (r >= l + 8 && load64(c + r - 8) == load64(s + r - 8)) r -= 8;
         while (r > l && c[r - 1] == s[r - 1]) --r;
         bx0 = std::min(bx0, x0 + int(l / 4)); bx1 = std::max(bx1, x0 + int((r + 3) / 4));
       }

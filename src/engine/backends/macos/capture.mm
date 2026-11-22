@@ -88,13 +88,14 @@ struct CaptureState {
   std::vector<uint8_t> image;
   std::vector<MacCapture*> sources;
   bool haveFrame = false;
-  /// Scaled frames whose raw dirty rects were logged, to learn which space ScreenCaptureKit uses for them.
-  int dirtyLogs = 0;
+  /// True after a scaled frame reported dirty rects outside its own size, so they were mapped from display space.
+  bool dirtyMapped = false;
   std::string failure;
 
   void fail(const std::string& message);
   void checkDisplay();
   void frame(CMSampleBufferRef sample);
+  bool scaledDirtyRects(id value, std::vector<DamageRect>& rects);
 };
 
 namespace {
@@ -157,7 +158,9 @@ class SharedCapture {
       config.colorSpaceName = kCGColorSpaceSRGB;
       config.showsCursor = NO;
       config.queueDepth = 3;
-      config.minimumFrameInterval = kCMTimeZero;
+      // Deliver no more frames than the encoder sends: a 120 Hz display otherwise doubles the copies.
+      const unsigned fps = capture_frame_rate.load();
+      config.minimumFrameInterval = fps ? CMTimeMake(1, int32_t(fps)) : kCMTimeZero;
       output = [[RelayCaptureOutput alloc] init];
       output->state = state;
       queue = dispatch_queue_create("relay.macos.capture", DISPATCH_QUEUE_SERIAL);
@@ -327,6 +330,30 @@ bool dirtyRects(id value, int width, int height, std::vector<DamageRect>& rects)
 }
 }
 
+/// Dirty rects of a scaled frame in output pixels. On the Mac they were measured in output space;
+/// a rect past the output size means display space, so all rects are then scaled down and rounded outward.
+bool CaptureState::scaledDirtyRects(id value, std::vector<DamageRect>& rects) {
+  std::vector<DamageRect> raw;
+  if (!dirtyRects(value, 1 << 20, 1 << 20, raw)) return false;
+  int right = 0, bottom = 0;
+  for (const auto& rect : raw) right = std::max(right, rect.x + rect.width), bottom = std::max(bottom, rect.y + rect.height);
+  const bool mapped = right > outWidth || bottom > outHeight;
+  if (mapped && !dirtyMapped) {
+    dirtyMapped = true;
+    std::fprintf(stderr, "capture: dirty rects reach %dx%d on a %dx%d frame; scaling them from %dx%d\n",
+                 right, bottom, outWidth, outHeight, display.width, display.height);
+  }
+  const double sx = mapped ? double(outWidth) / display.width : 1, sy = mapped ? double(outHeight) / display.height : 1;
+  for (const auto& rect : raw) {
+    const int left = std::clamp(int(std::floor(rect.x * sx)), 0, outWidth);
+    const int top = std::clamp(int(std::floor(rect.y * sy)), 0, outHeight);
+    const int r = std::clamp(int(std::ceil((rect.x + rect.width) * sx)), 0, outWidth);
+    const int b = std::clamp(int(std::ceil((rect.y + rect.height) * sy)), 0, outHeight);
+    if (r > left && b > top) rects.push_back({left, top, r - left, b - top});
+  }
+  return !rects.empty();
+}
+
 void CaptureState::fail(const std::string& message) {
   std::lock_guard<std::mutex> lock(mutex);
   if (!failure.empty()) return;
@@ -357,22 +384,12 @@ void CaptureState::frame(CMSampleBufferRef sample) {
     checkDisplay();
     throw std::runtime_error("Screen capture returned an invalid image");
   }
+  // A complete frame with an empty dirty list changed nothing: do no work.
+  id dirtyValue = info[SCStreamFrameInfoDirtyRects];
+  if (haveFrame && [dirtyValue isKindOfClass:[NSArray class]] && [dirtyValue count] == 0) return;
   std::vector<DamageRect> rects;
-  // A scaled stream treats every frame as full damage: it is not confirmed which space its dirty rects use.
-  // The tiles encoder diffs the scaled frame, so only changed pixels go out anyway.
   const bool scaled = outWidth != display.width || outHeight != display.height;
-  bool full = scaled || !dirtyRects(info[SCStreamFrameInfoDirtyRects], outWidth, outHeight, rects);
-  if (scaled && dirtyLogs < 8) {
-    // Unclipped extents: rects that reach past the output size are in display space, not output space.
-    std::vector<DamageRect> raw;
-    if (dirtyRects(info[SCStreamFrameInfoDirtyRects], 1 << 20, 1 << 20, raw)) {
-      int right = 0, bottom = 0;
-      for (const auto& rect : raw) right = std::max(right, rect.x + rect.width), bottom = std::max(bottom, rect.y + rect.height);
-      std::fprintf(stderr, "capture: scaled frame %dx%d of display %dx%d has %zu dirty rects that reach %dx%d\n",
-                   outWidth, outHeight, display.width, display.height, raw.size(), right, bottom);
-      ++dirtyLogs;
-    }
-  }
+  bool full = !(scaled ? scaledDirtyRects(dirtyValue, rects) : dirtyRects(dirtyValue, outWidth, outHeight, rects));
   for (const auto& rect : rects)
     if (rect.x == 0 && rect.y == 0 && rect.width == outWidth && rect.height == outHeight) full = true;
   PixelLock pixelsLock(buffer);
