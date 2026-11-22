@@ -3,6 +3,7 @@
 #include <zstd.h>
 
 #include <algorithm>
+#include <array>
 #include <cstring>
 #include <stdexcept>
 #include <unordered_map>
@@ -343,30 +344,56 @@ bool Encoder::detectMove(const Rect& a, std::vector<Op>& ops, Stats& st) {
   bool found = verify(dx, dy);
   // 2. Near the previous shift: a drag that the ACK pace coalesces changes its step a little.
   if (!found && (lastMoveDx_ || lastMoveDy_) && sample()) {
-    // Both axes at once within 32 px of the last shift, on 64 of the samples.
-    constexpr int reach = 32;
+    // Both axes at once near the last shift, on 64 of the samples: within 12 px, then 32.
     const size_t step = std::max<size_t>(1, samples.size() / 64);
-    int best_n = -1, bx = lastMoveDx_, by = lastMoveDy_, used = 0;
+    int used = 0;
     for (size_t i = 0; i < samples.size(); i += step) ++used;
-    for (int cy = lastMoveDy_ - reach; cy <= lastMoveDy_ + reach; ++cy)
-      for (int cx = lastMoveDx_ - reach; cx <= lastMoveDx_ + reach; ++cx) {
-        if (!cx && !cy) continue;
-        int n = 0;
-        for (size_t i = 0; i < samples.size(); i += step) {
-          const auto [x, y] = samples[i];
-          const int sx = x - cx, sy = y - cy;
-          if (sx < 0 || sy < 0 || sx >= width_ || sy >= height_) continue;
-          n += pixel(cur_, x, y) == pixel(sent_, sx, sy);
+    for (const int reach : {12, 32}) {
+      int best_n = -1, bx = lastMoveDx_, by = lastMoveDy_;
+      for (int cy = lastMoveDy_ - reach; cy <= lastMoveDy_ + reach; ++cy)
+        for (int cx = lastMoveDx_ - reach; cx <= lastMoveDx_ + reach; ++cx) {
+          if (!cx && !cy) continue;
+          int n = 0;
+          for (size_t i = 0; i < samples.size(); i += step) {
+            const auto [x, y] = samples[i];
+            const int sx = x - cx, sy = y - cy;
+            if (sx < 0 || sy < 0 || sx >= width_ || sy >= height_) continue;
+            n += pixel(cur_, x, y) == pixel(sent_, sx, sy);
+          }
+          if (n > best_n) { best_n = n; bx = cx; by = cy; }
         }
-        if (n > best_n) { best_n = n; bx = cx; by = cy; }
-      }
-    dx = bx; dy = by;
-    found = best_n * 4 >= used && verify(dx, dy);
+      dx = bx; dy = by;
+      found = best_n * 4 >= used && verify(dx, dy);
+      if (found) break;
+    }
   }
   // 3. A search over the area, unless the last ones found nothing: then it waits 0, 1, 2, ... 64 frames.
   if (!found) {
     if (moveWait_ > 0) { --moveWait_; lastMoveDx_ = lastMoveDy_ = 0; return false; }
-    if (sample()) {
+    // A moved window brings its colours along; new content (video, noise) mostly does not.
+    // Look for the colours of 64 samples in sent_ over the area, every second row and column.
+    auto coloursKnown = [&]() {
+      std::array<uint32_t, 128> set{};
+      std::array<uint8_t, 128> hit{};
+      int count = 0;
+      const size_t step = std::max<size_t>(1, samples.size() / 64);
+      for (size_t i = 0; i < samples.size(); i += step) {
+        const uint32_t c = pixel(cur_, samples[i].first, samples[i].second) | 1u;
+        size_t k = (c * 2654435761u) >> 25;
+        while (set[k] && set[k] != c) k = (k + 1) & 127;
+        if (!set[k]) { set[k] = c; ++count; }
+      }
+      int found = 0;
+      for (int y = a.y; y < a.y + a.h && found * 2 < count; y += 2)
+        for (int x = a.x; x < a.x + a.w; x += 2) {
+          const uint32_t c = pixel(sent_, x, y) | 1u;
+          size_t k = (c * 2654435761u) >> 25;
+          while (set[k] && set[k] != c) k = (k + 1) & 127;
+          if (set[k] == c && !hit[k]) { hit[k] = 1; ++found; }
+        }
+      return found * 2 >= count;
+    };
+    if (sample() && coloursKnown()) {
       profile(cur_, true, profCur_); profile(sent_, true, profSent_);
       dx = best(profCur_, profSent_); dy = 0;
       found = refine(dx, dy, max_shift) && verify(dx, dy);
@@ -401,12 +428,16 @@ bool Encoder::detectMove(const Rect& a, std::vector<Op>& ops, Stats& st) {
     bool whole = true;
     for (int y = y0; y < y1 && whole; ++y) whole = rowMatches(y, x0, x1);
     if (whole) {
+      // The window edge lies in the tiles around the box, so the box grows by less than a tile on
+      // each side. A wider growth would follow flat background, which matches under any shift.
+      const int lx = std::max(0, x0 - (tile - 1)), rx = std::min(width_, x1 + (tile - 1));
+      const int ty = std::max(0, y0 - (tile - 1)), by = std::min(height_, y1 + (tile - 1));
       for (bool grew = true; grew;) {
         grew = false;
-        if (x0 > 0 && columnMatches(x0 - 1, y0, y1)) { --x0; grew = true; }
-        if (x1 < width_ && columnMatches(x1, y0, y1)) { ++x1; grew = true; }
-        if (y0 > 0 && rowMatches(y0 - 1, x0, x1)) { --y0; grew = true; }
-        if (y1 < height_ && rowMatches(y1, x0, x1)) { ++y1; grew = true; }
+        if (x0 > lx && columnMatches(x0 - 1, y0, y1)) { --x0; grew = true; }
+        if (x1 < rx && columnMatches(x1, y0, y1)) { ++x1; grew = true; }
+        if (y0 > ty && rowMatches(y0 - 1, x0, x1)) { --y0; grew = true; }
+        if (y1 < by && rowMatches(y1, x0, x1)) { ++y1; grew = true; }
       }
       const Rect r{x0, y0, x1 - x0, y1 - y0};
       Op op{op_copy, r, r.x - dx, r.y - dy, {0, 0, 0}};
