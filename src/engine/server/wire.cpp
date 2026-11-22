@@ -2,6 +2,7 @@
 #include "config.hpp"
 #include "core/capture-source.hpp"
 #include "core/flow.hpp"
+#include "core/output.hpp"
 #include <libwebsockets.h>
 #include <algorithm>
 #include <cstring>
@@ -76,17 +77,50 @@ std::string jsonString(const std::string& text) {
   return out + '"';
 }
 namespace {
-Target plainTarget(const std::string& target) {
-  if (target == "/stream?view=1") return {Socket::watch, false};
-  if (target == "/stream") return {Socket::stream, false};
-  if (target == "/stream?clipboard=1") return {Socket::stream, true};
-  if (target == "/stream?take=1") return {Socket::take, false};
-  if (target == "/stream?take=1&clipboard=1") return {Socket::take, true};
-  if (target == "/control") return {Socket::control, false};
+Target target(Socket socket, bool clipboard) {
+  Target t;
+  t.socket = socket; t.clipboard = clipboard;
+  return t;
+}
+Target plainTarget(const std::string& path) {
+  if (path == "/stream?view=1") return target(Socket::watch, false);
+  if (path == "/stream") return target(Socket::stream, false);
+  if (path == "/stream?clipboard=1") return target(Socket::stream, true);
+  if (path == "/stream?take=1") return target(Socket::take, false);
+  if (path == "/stream?take=1&clipboard=1") return target(Socket::take, true);
+  if (path == "/control") return target(Socket::control, false);
   return {};
 }
 }  // namespace
-Target viewerTarget(const std::string& whole) {
+namespace {
+Target codecTarget(const std::string& whole);
+}  // namespace
+Target viewerTarget(const std::string& target) {
+  // Take output=NAME out of the query, then classify what is left.
+  const auto query = target.find('?');
+  if (query == std::string::npos) return codecTarget(target);
+  std::string rest = target.substr(0, query), output;
+  bool seen = false;
+  size_t pos = query + 1;
+  while (pos <= target.size()) {
+    const size_t next = std::min(target.find('&', pos), target.size());
+    const std::string param = target.substr(pos, next - pos);
+    if (param.rfind("output=", 0) == 0) {
+      if (seen || !validOutputName(param.substr(7))) return {};
+      output = param.substr(7); seen = true;
+    } else {
+      rest += rest.size() == query ? '?' : '&';
+      rest += param;
+    }
+    pos = next + 1;
+  }
+  Target t = codecTarget(rest);
+  if (seen && t.socket == Socket::none) return {};
+  t.output = output;
+  return t;
+}
+namespace {
+Target codecTarget(const std::string& whole) {
   // codec=tiles may be followed by its own parameters, in any order, each once:
   // tiles_inflight=K (K from 1 to 4) and size=WxH (1 to 65535 each).
   size_t at = std::string::npos;
@@ -126,6 +160,7 @@ Target viewerTarget(const std::string& whole) {
   }
   return t;
 }
+}  // namespace
 ConnectionPlan connectionPlan(Socket socket, size_t viewerCount, bool streamOwnsInput, bool controlOpen,
                               size_t grantViewerCount, bool grant, bool inputViewerHasGrant) {
   const bool idle = !streamOwnsInput && !controlOpen;

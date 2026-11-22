@@ -264,8 +264,23 @@ class WaylandInput final : public InputBackend {
 
   void flush() override { post(InputJob{InputJob::Kind::flush}); }
 
-  std::pair<uint16_t, uint16_t> dimensions() const override { return {width_, height_}; }
+  std::pair<uint16_t, uint16_t> dimensions() const override {
+    std::lock_guard<std::mutex> lock(mutex_);
+    return {width_, height_};
+  }
   const char* name() const override { return "wayland"; }
+
+  bool selectOutput(const std::string& output) override {
+    std::unique_lock<std::mutex> lock(mutex_);
+    if (stopping_ || workerFailed_) return false;
+    if (output == boundOutput_) return true;
+    wantedOutput_ = output;
+    const uint64_t request = ++outputRequests_;
+    wake_.notify_all();
+    // The worker binds the output after the input queued before this call.
+    if (!wake_.wait_for(lock, std::chrono::seconds(2), [&] { return outputDone_ >= request || stopping_; })) return false;
+    return outputDone_ >= request && outputOk_;
+  }
 
  private:
   struct Masks {
@@ -287,6 +302,10 @@ class WaylandInput final : public InputBackend {
   std::set<uint32_t> modifierKeys_;
   uint16_t width_ = 0;
   uint16_t height_ = 0;
+  // Output switches: selectOutput asks, the worker answers. Guarded by mutex_.
+  std::string boundOutput_, wantedOutput_;
+  uint64_t outputRequests_ = 0, outputDone_ = 0;
+  bool outputOk_ = false;
   mutable std::mutex mutex_;
   std::condition_variable wake_;
   InputQueue queue_;
@@ -331,6 +350,25 @@ class WaylandInput final : public InputBackend {
     uploadKeymap(keymap_->text());
     if (!flushDisplay(connection_->display) || wl_display_roundtrip(connection_->display) < 0)
       throw std::runtime_error("Wayland input device registration failed");
+  }
+
+  /// Moves the virtual pointer to another output; the size of the new output, or nothing when it is unknown.
+  std::optional<std::pair<uint16_t, uint16_t>> bindOutput(const std::string& output) {
+    try {
+      if (!connection_->rebind(output)) return std::nullopt;
+      if (connection_->width < 1 || connection_->height < 1 ||
+          connection_->width > std::numeric_limits<uint16_t>::max() ||
+          connection_->height > std::numeric_limits<uint16_t>::max()) return std::nullopt;
+      VirtualPointer next(zwlr_virtual_pointer_manager_v1_create_virtual_pointer_with_output(
+        connection_->virtualPointerManager, seat_.get(), connection_->output), zwlr_virtual_pointer_v1_destroy);
+      if (!next) return std::nullopt;
+      pointer_ = std::move(next);
+      if (!flushDisplay(connection_->display) || wl_display_roundtrip(connection_->display) < 0) return std::nullopt;
+      return std::make_pair(uint16_t(connection_->width), uint16_t(connection_->height));
+    } catch (const std::exception& failure) {
+      std::fprintf(stderr, "input: binding output failed: %s\n", failure.what());
+      return std::nullopt;
+    }
   }
 
   void bindSeat() {
@@ -521,9 +559,21 @@ class WaylandInput final : public InputBackend {
     bool logged = false;
     std::unique_lock<std::mutex> lock(mutex_);
     for (;;) {
-      wake_.wait(lock, [this] { return stopping_ || !queue_.empty(); });
+      wake_.wait(lock, [this] { return stopping_ || !queue_.empty() || outputRequests_ != outputDone_; });
       if (stopping_) {
         queue_.cancel();
+      }
+      if (!stopping_ && queue_.empty() && outputRequests_ != outputDone_) {
+        const std::string wanted = wantedOutput_;
+        const uint64_t request = outputRequests_;
+        lock.unlock();
+        const auto bound = bindOutput(wanted);
+        lock.lock();
+        if (bound) { boundOutput_ = wanted; width_ = bound->first; height_ = bound->second; }
+        outputOk_ = bool(bound);
+        outputDone_ = request;
+        wake_.notify_all();
+        continue;
       }
       if (queue_.empty()) break;
       const InputJob job = queue_.take();

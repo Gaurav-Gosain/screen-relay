@@ -1,5 +1,6 @@
 #include "core/input.hpp"
 #include "backends/linux/keycodes.hpp"
+#include "outputs.hpp"
 #include <X11/Xlib.h>
 #include <X11/XKBlib.h>
 #include <X11/keysym.h>
@@ -36,6 +37,9 @@ class X11Input final : public InputBackend {
   };
   Display* display = nullptr;
   uint16_t width = 0, height = 0;
+  /// The output pointer input goes to: its root position and size. Read and written on the caller thread.
+  int origin_x = 0, origin_y = 0;
+  uint16_t root_w = 0, root_h = 0;
   int columns = 1;
   uint64_t typed = 0;
   std::map<KeySym, KeyCode> layout;
@@ -59,7 +63,7 @@ class X11Input final : public InputBackend {
       XCloseDisplay(display); display = nullptr;
       throw std::runtime_error("input requires the XTest extension");
     }
-    width = uint16_t(root_width); height = uint16_t(root_height);
+    width = root_w = uint16_t(root_width); height = root_h = uint16_t(root_height);
     findSpares();
     findModifiers();
     worker = std::thread([this] { run(); });
@@ -72,6 +76,14 @@ class X11Input final : public InputBackend {
   }
   std::pair<uint16_t, uint16_t> dimensions() const override { return {width, height}; }
   const char* name() const override { return "x11"; }
+  bool selectOutput(const std::string& output) override {
+    if (output.empty()) { origin_x = origin_y = 0; width = root_w; height = root_h; return true; }
+    const auto monitor = x11::findMonitor(display, output);
+    if (!monitor || monitor->width < 1 || monitor->height < 1 || monitor->width > 65535 || monitor->height > 65535) return false;
+    origin_x = monitor->x; origin_y = monitor->y;
+    width = uint16_t(monitor->width); height = uint16_t(monitor->height);
+    return true;
+  }
   std::optional<NativeKey> nativeKey(uint16_t usage) const override {
     const int keycode = hidKeycode(usage);
     if (!keycode) return std::nullopt;
@@ -107,7 +119,7 @@ class X11Input final : public InputBackend {
   }
   void move(int x, int y) override {
     InputJob job{InputJob::Kind::motion};
-    job.x = x; job.y = y;
+    job.x = origin_x + x; job.y = origin_y + y;
     post(job);
   }
   void scroll(unsigned axis, int notches) override {

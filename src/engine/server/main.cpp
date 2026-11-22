@@ -66,7 +66,8 @@ int main(int argc, char** argv) {
   std::cerr << "Relay listening on " << config.bind << ':' << config.port << '\n';
   std::cout << "{\"ready\":true,\"pid\":" << getpid() << ",\"port\":" << config.port << "}" << std::endl;
   while (!stopping) {
-    captureError = s.streams[0]->capture.error();
+    // Only the default capture stops the engine; a capture of another output ends its own stream.
+    captureError = s.streams[0]->output.empty() ? s.streams[0]->capture.error() : std::string();
     if (!captureError.empty()) {
       std::cerr << "Capture worker failed: " << captureError << '\n';
       result = 1; break;

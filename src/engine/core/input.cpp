@@ -54,6 +54,10 @@ InputController::InputController(std::unique_ptr<InputBackend> source) : backend
 InputController::~InputController() { releaseAll(); }
 std::pair<uint16_t, uint16_t> InputController::dimensions() const { return backend->dimensions(); }
 const char* InputController::name() const { return backend->name(); }
+bool InputController::selectOutput(const std::string& output) {
+  releaseAll();
+  return backend->selectOutput(output);
+}
 void InputController::releaseAll() {
   for (const auto key : keys) backend->releaseKey(key);
   for (const auto button : buttons) backend->releaseButton(button);

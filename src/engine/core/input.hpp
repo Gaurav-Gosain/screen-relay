@@ -5,6 +5,7 @@
 #include <memory>
 #include <optional>
 #include <set>
+#include <string>
 #include <utility>
 
 namespace relay {
@@ -85,6 +86,8 @@ class InputBackend {
   virtual void flush() = 0;
   virtual std::pair<uint16_t, uint16_t> dimensions() const = 0;
   virtual const char* name() const = 0;
+  /// Sends pointer input to the named output from now on; empty is the default output. False when the output is unknown.
+  virtual bool selectOutput(const std::string& output) { return output.empty(); }
 };
 /// Records allowed to wait in a backend queue; a batch that would exceed it is refused before any of it is queued.
 constexpr size_t max_queued_events = 1024;
@@ -106,6 +109,8 @@ class InputController {
   void cancel();
   std::pair<uint16_t, uint16_t> dimensions() const;
   const char* name() const;
+  /// Releases held input, then maps pointer input to the named output; false leaves the mapping as it was.
+  bool selectOutput(const std::string& output);
 
  private:
   std::unique_ptr<InputBackend> backend;

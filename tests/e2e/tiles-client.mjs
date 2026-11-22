@@ -1,7 +1,7 @@
 // Minimal tiles client for tests: connects to /stream?view=1&codec=tiles,
 // applies type 8 frames to an RGB buffer, ACKs each one, and can compare the
 // buffer with /screenshot.png. Usage:
-//   node tests/e2e/tiles-client.mjs http://127.0.0.1:8080 SECONDS [--keyframe-at S] [--ack-delay MS] [--inflight K] [--size WxH] [--clipboard] [--check]
+//   node tests/e2e/tiles-client.mjs http://127.0.0.1:8080 SECONDS [--keyframe-at S] [--ack-delay MS] [--inflight K] [--size WxH] [--clipboard] [--output NAME] [--check]
 // Prints one JSON line with frames, bytes, latency and the check result.
 import zlib from 'node:zlib';
 
@@ -15,6 +15,8 @@ const ackDelay = rest.includes('--ack-delay') ? Number(rest[rest.indexOf('--ack-
 const inflight = rest.includes('--inflight') ? Number(rest[rest.indexOf('--inflight') + 1]) : 1;
 // --size WxH asks the engine to scale by a whole factor (size=WxH); --check then box-filters the screenshot.
 const size = rest.includes('--size') ? rest[rest.indexOf('--size') + 1] : '';
+// --output NAME captures that output (output=NAME); --check then reads /screenshot.png?output=NAME.
+const output = rest.includes('--output') ? rest[rest.indexOf('--output') + 1] : '';
 // --clipboard opens a control stream with clipboard=1, counts type 7 notices and reads GET /clipboard after each one.
 const clipboard = rest.includes('--clipboard');
 const token = process.env.SCREEN_RELAY_TOKEN;
@@ -90,7 +92,7 @@ function decodePng(buf) {
 }
 
 const stats = { frames: 0, keyframes: 0, bytes: 0, copies: 0, maxBytes: 0, lat: [], errors: [], notices: 0, clipboard: [] };
-const ws = new WebSocket(base.replace(/^http/, 'ws') + (clipboard ? '/stream?take=1&clipboard=1&codec=tiles' : '/stream?view=1&codec=tiles') + (inflight > 1 ? '&tiles_inflight=' + inflight : '') + (size ? '&size=' + size : ''), token ? ['nsl1', 'bearer.' + token] : ['nsl1']);
+const ws = new WebSocket(base.replace(/^http/, 'ws') + (clipboard ? '/stream?take=1&clipboard=1' : '/stream?view=1') + (output ? '&output=' + encodeURIComponent(output) : '') + '&codec=tiles' + (inflight > 1 ? '&tiles_inflight=' + inflight : '') + (size ? '&size=' + size : ''), token ? ['nsl1', 'bearer.' + token] : ['nsl1']);
 ws.binaryType = 'arraybuffer';
 let gen = 0, keySent = false;
 const started = Date.now();
@@ -121,7 +123,7 @@ await new Promise((resolve) => setTimeout(resolve, seconds * 1000));
 let lossless = null;
 if (check && rgb) {
   const headers = token ? { Authorization: 'Bearer ' + token } : {};
-  const png = Buffer.from(await (await fetch(base + '/screenshot.png', { headers })).arrayBuffer());
+  const png = Buffer.from(await (await fetch(base + '/screenshot.png' + (output ? '?output=' + encodeURIComponent(output) : ''), { headers })).arrayBuffer());
   let shot = decodePng(png);
   const k = Math.round(shot.w / W);
   if (k > 1 && Math.ceil(shot.w / k) === W && Math.ceil(shot.h / k) === H) {

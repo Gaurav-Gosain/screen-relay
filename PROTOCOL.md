@@ -58,6 +58,18 @@ Adding `clipboard=1` to a supported stream URL does not change these rules. A re
 
 When the session has a token, offer both `nsl1` and `bearer.TOKEN` as subprotocols; the server selects `nsl1`. Do not put the token in a request URL.
 
+### Outputs
+
+The Wayland and X11 backends can capture one display of several. On X11 a display is a RandR monitor.
+
+- `GET /capabilities` lists the displays in `"outputs"`, for example `[{"name":"DP-2","x":0,"y":0,"width":1920,"height":1080,"scale":1,"primary":true}]`. `x` and `y` give the position in the desktop layout, in logical pixels. `width` and `height` give the capture size in physical pixels. `scale` gives the physical pixels for each logical pixel.
+- `primary` marks the display that a URL without `output=NAME` captures. On Wayland this is the `--output` display, or the first one. On X11 a URL without `output=NAME` captures the whole screen, so no display is primary when there are several.
+- Add `output=NAME` to a `/stream` or `/control` URL to use that display. Put it before `codec=tiles`, for example `/stream?view=1&output=DP-3&codec=tiles`. It can come once. A name has 1 to 63 of `A-Z a-z 0-9 . _ - :`.
+- Pointer input from that connection goes to that display: 0 to 65535 covers the display, not the desktop.
+- `POST /input?output=NAME` and `GET /screenshot.png?output=NAME` use that display. An unknown name gives `404` with `"error":"unknown_output"`.
+- A `/stream` URL with an unknown name fails its first capture, and the connection closes. A `/control` URL with an unknown name opens and closes with code 1008 and reason `unknown output`.
+- Other backends have no `"outputs"`. Their handshake fails for a URL with `output=NAME`.
+
 ### Grants
 
 A grant is a second credential with a narrower scope and a lifetime, for a viewer or client that should not hold the session token. Send `POST /grants/watch` or `POST /grants/control` with the session token as `Authorization: Bearer TOKEN`. Add `?ttl=SECONDS` to set the lifetime; the default and the maximum are 3600. Add `connections=1` for a single-connection grant, such as `?ttl=120&connections=1`. The response is `{"id":"…","token":"…","expires_in":3600,"scope":"watch"}`, with `"connections":1` for a single-connection grant. A client offers the grant's `token` as `bearer.TOKEN`, the same way as the session token.

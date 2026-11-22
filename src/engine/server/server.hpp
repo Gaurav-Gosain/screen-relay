@@ -22,7 +22,7 @@
 
 namespace relay {
 struct HttpResponse {
-  unsigned char body[2048], input[max_input_batch * 16];
+  unsigned char body[4096], input[max_input_batch * 16];
   size_t length, input_length, input_expected;
   std::vector<uint8_t>* image;
   std::string* upload;
@@ -31,6 +31,7 @@ struct HttpResponse {
   uint64_t upload_expected, grant_id;
   bool image_headers, clipboard, input_reply, input_headers, closing, tiles;
   unsigned tiles_inflight, tiles_width, tiles_height;
+  char output[64];  ///< output=NAME of a /stream, NUL-terminated; empty is the default output
   unsigned reply_status, image_status;
   const char* image_type;
 };
@@ -68,8 +69,10 @@ struct Server {
     uint16_t width = 0, height = 0;
     bool failed = false;
     std::vector<uint8_t> received;
+    /// The output this stream captures; empty is the default output.
+    const std::string output;
     CaptureEncoder capture;
-    explicit Stream(Server& server);
+    explicit Stream(Server& server, std::string output = {});
     void begin(lws* wsi, uint32_t gen, bool tiles, unsigned tiles_inflight, unsigned tiles_width, unsigned tiles_height);
     void end();
     void updateFlow(bool proxy);
@@ -102,7 +105,7 @@ struct Server {
   explicit Server(Config settings);
   Stream* streamFor(lws* wsi);
   ConnectionPlan planConnection(Socket socket, bool grant);
-  int startStream(lws* wsi, Socket socket, const ConnectionPlan& plan, bool clipboardNotices, bool tiles, unsigned tiles_inflight, unsigned tiles_width, unsigned tiles_height);
+  int startStream(lws* wsi, Socket socket, const ConnectionPlan& plan, bool clipboardNotices, bool tiles, unsigned tiles_inflight, unsigned tiles_width, unsigned tiles_height, const std::string& output = {});
   void release();
   void endStream(lws* wsi);
   void endControl();

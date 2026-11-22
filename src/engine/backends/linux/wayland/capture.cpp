@@ -255,7 +255,8 @@ class WaylandCaptureSource final : public CaptureSource {
   }
 
  public:
-  WaylandCaptureSource() : width(connection.width), height(connection.height) {
+  explicit WaylandCaptureSource(const std::string& output)
+      : connection(output), width(connection.width), height(connection.height) {
     require(connection.screencopyManager, "Wayland compositor does not offer zwlr_screencopy_manager_v1");
     require(wl_proxy_get_version(reinterpret_cast<wl_proxy*>(connection.screencopyManager)) >= 3,
             "Wayland compositor must offer zwlr_screencopy_manager_v1 version 3");
@@ -293,6 +294,10 @@ class WaylandCaptureSource final : public CaptureSource {
 }
 
 std::unique_ptr<CaptureSource> makeCaptureSource() {
-  return std::make_unique<WaylandCaptureSource>();
+  return std::make_unique<WaylandCaptureSource>(std::string());
+}
+
+std::unique_ptr<CaptureSource> makeOutputCaptureSource(const std::string& output) {
+  return std::make_unique<WaylandCaptureSource>(output);
 }
 }

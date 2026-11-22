@@ -5,6 +5,7 @@
 #include <algorithm>
 #include <chrono>
 #include <cstddef>
+#include <cstdio>
 #include <cstring>
 #include <iostream>
 #include <limits>
@@ -62,7 +63,13 @@ std::optional<FlowControl::TransportSample> streamTransportSample(lws* wsi, size
 }
 #endif
 }  // namespace
-Server::Stream::Stream(Server& server) : capture([this, &server](EncodedFrame&& frame) {
+namespace {
+CaptureSourceFactory sourceFor(const Backend& backend, const std::string& output) {
+  if (output.empty() || !backend.captureOutput) return backend.capture;
+  return [&backend, output] { return backend.captureOutput(output); };
+}
+}  // namespace
+Server::Stream::Stream(Server& server, std::string name) : output(std::move(name)), capture([this, &server](EncodedFrame&& frame) {
   std::lock_guard<std::mutex> lock(mutex);
   if (!generation || frame.generation != generation) return false;
   if (!flow.enqueue(frame.sequence, frame.annex_b.size(), frame.pts_us, nowUs())) {
@@ -73,7 +80,7 @@ Server::Stream::Stream(Server& server) : capture([this, &server](EncodedFrame&& 
   return true;
 }, CaptureSettings{server.config.fps, server.config.bitrate_min, server.config.bitrate_start, server.config.bitrate_max,
                    server.config.gpu_scale},
-backendFor(server.config.backend).capture, [this, &server](uint32_t gen, CursorImage&& cursor) {
+sourceFor(backendFor(server.config.backend), output), [this, &server](uint32_t gen, CursorImage&& cursor) {
   std::lock_guard<std::mutex> lock(mutex);
   if (!generation || gen != generation) return;
   pending_cursor = std::move(cursor);
@@ -119,10 +126,15 @@ ConnectionPlan Server::planConnection(Socket socket, bool grant) {
   }
   return connectionPlan(socket, count, input_viewer != nullptr, control != nullptr, grantCount, grant, inputViewerHasGrant);
 }
-int Server::startStream(lws* wsi, Socket socket, const ConnectionPlan& plan, bool clipboardNotices, bool tiles, unsigned tiles_inflight, unsigned tiles_width, unsigned tiles_height) {
-  auto slot = std::find_if(streams.begin(), streams.end(), [](const auto& stream) { return !stream || !stream->viewer; });
+int Server::startStream(lws* wsi, Socket socket, const ConnectionPlan& plan, bool clipboardNotices, bool tiles, unsigned tiles_inflight, unsigned tiles_width, unsigned tiles_height, const std::string& wanted) {
+  // The default output is the one --output names; asking for it by name shares the default capture.
+  const std::string output = wanted == config.output ? std::string() : wanted;
+  // An idle slot that holds a capture of another output is not reused.
+  auto slot = std::find_if(streams.begin(), streams.end(), [&output](const auto& stream) {
+    return !stream || (!stream->viewer && stream->output == output);
+  });
   if (slot != streams.end() && !*slot) {
-    auto stream = std::make_unique<Stream>(*this);
+    auto stream = std::make_unique<Stream>(*this, output);
     std::string error;
     if (!stream->capture.start(error)) {
       std::cerr << "Viewer capture startup failed: " << error << '\n';
@@ -140,9 +152,25 @@ int Server::startStream(lws* wsi, Socket socket, const ConnectionPlan& plan, boo
     } else endStream(previous);
   }
   if (plan.closeControl) { evict(control); endControl(); }
-  if (socket != Socket::watch) { input_viewer = wsi; input->resetLocks(); }
+  if (slot != streams.end() && (*slot)->output != output) {
+    // Reused after a takeover: the slot captures another output, so start a new capture.
+    auto stream = std::make_unique<Stream>(*this, output);
+    std::string error;
+    if (!stream->capture.start(error)) {
+      std::cerr << "Viewer capture startup failed: " << error << '\n';
+      return -1;
+    }
+    *slot = std::move(stream);
+  }
+  if (socket != Socket::watch) {
+    if (!input->selectOutput(output)) {
+      std::cerr << "Input cannot use output " << output << '\n';
+      return -1;
+    }
+    input_viewer = wsi; input->resetLocks();
+  }
   auto& stream = **slot;
-  stream.width = width; stream.height = height;
+  stream.width = output.empty() ? width : 0; stream.height = output.empty() ? height : 0;
   stream.clipboard_notices = clipboardNotices;
   stream.begin(wsi, ++nextGeneration, tiles, tiles_inflight, tiles_width, tiles_height);
   stream.updateFlow(config.proxy);
@@ -152,9 +180,19 @@ void Server::release() { if (input) input->releaseAll(); }
 void Server::endStream(lws* wsi) {
   for (auto slot = streams.begin(); slot != streams.end(); ++slot) {
     if (!*slot || (*slot)->viewer != wsi) continue;
-    if (input_viewer == wsi) { release(); input->cancel(); input_viewer = nullptr; }
+    if (input_viewer == wsi) {
+      release(); input->cancel(); input_viewer = nullptr;
+      if (!(*slot)->output.empty()) input->selectOutput({});
+    }
     (*slot)->end();
     if (slot != streams.begin()) slot->reset();
+    else if (!(*slot)->output.empty()) {
+      // The first slot keeps a capture of the default output ready.
+      auto stream = std::make_unique<Stream>(*this);
+      std::string error;
+      if (stream->capture.start(error)) *slot = std::move(stream);
+      else std::cerr << "Default capture restart failed: " << error << '\n';
+    }
     return;
   }
 }
@@ -457,6 +495,9 @@ int inputResponse(lws* wsi, HttpResponse* response, Server* s) {
   if (s->holdsInput()) return errorResponse(wsi, response, HTTP_STATUS_CONFLICT, "busy");
   const size_t count = response->input_length / 16;
   if (s->input->pending() + count > max_queued_events) return errorResponse(wsi, response, HTTP_STATUS_CONFLICT, "busy");
+  // Pointer input of the batch goes to output=NAME, or to the default output.
+  const std::string output = response->output == s->config.output ? std::string() : std::string(response->output);
+  if (!s->input->selectOutput(output)) return errorResponse(wsi, response, HTTP_STATUS_NOT_FOUND, "unknown_output");
   size_t index = 0;
   auto status = InputStatus::ok;
   for (; index < count && status == InputStatus::ok; ++index) status = s->input->apply(inputEvent(response->input + index * 16));
@@ -507,6 +548,14 @@ int callback(lws* wsi, lws_callback_reasons reason, void* user, void* in, size_t
                                status == HTTP_STATUS_REQ_ENTITY_TOO_LARGE ? "too_large" : "invalid_input");
         }
         if (s->holdsInput()) return errorResponse(wsi, response, HTTP_STATUS_CONFLICT, "busy");
+        response->output[0] = 0;
+        char arg[80] = {};
+        for (int index = 0; lws_hdr_copy_fragment(wsi, arg, sizeof(arg), WSI_TOKEN_HTTP_URI_ARGS, index) > 0; ++index) {
+          const std::string pair(arg);
+          if (pair.rfind("output=", 0) != 0 || response->output[0] || !validOutputName(pair.substr(7)))
+            return errorResponse(wsi, response, HTTP_STATUS_BAD_REQUEST, "invalid_query");
+          std::snprintf(response->output, sizeof(response->output), "%s", pair.c_str() + 7);
+        }
         response->input_length = 0; response->input_expected = length; return 0;
       }
       if (path == "/clipboard") {
@@ -592,13 +641,38 @@ int callback(lws* wsi, lws_callback_reasons reason, void* user, void* in, size_t
         if (!authenticated(s->config, wsi)) return errorResponse(wsi, response, HTTP_STATUS_UNAUTHORIZED, "unauthorized");
         if (path == "/metrics") return metricsResponse(wsi, response, s);
         if (path == "/screenshot.png") {
-          if (s->screenshot_client || !s->screenshot.request()) {
+          std::string output;
+          char arg[80] = {};
+          for (int index = 0; lws_hdr_copy_fragment(wsi, arg, sizeof(arg), WSI_TOKEN_HTTP_URI_ARGS, index) > 0; ++index) {
+            const std::string pair(arg);
+            if (pair.rfind("output=", 0) != 0 || !output.empty() || !validOutputName(pair.substr(7)))
+              return errorResponse(wsi, response, HTTP_STATUS_BAD_REQUEST, "invalid_query");
+            output = pair.substr(7);
+          }
+          if (output == s->config.output) output.clear();
+          if (!output.empty() && !backendFor(s->config.backend).captureOutput)
+            return errorResponse(wsi, response, HTTP_STATUS_NOT_FOUND, "unknown_output");
+          if (s->screenshot_client || !s->screenshot.request(output)) {
             return errorResponse(wsi, response, HTTP_STATUS_SERVICE_UNAVAILABLE, "busy");
           }
           s->screenshot_client = wsi; response->image_headers = false; response->offset = 0;
           lws_set_timer_usecs(wsi, 5000000); return 0;
         }
         const std::string backend = s->input->name();
+        std::string outputs;
+        if (const auto list = backendFor(s->config.backend).outputs) {
+          try {
+            for (const auto& o : list()) {
+              char scale[32];
+              std::snprintf(scale, sizeof(scale), "%g", o.scale);
+              outputs += std::string(outputs.empty() ? "" : ",") + "{\"name\":" + jsonString(o.name) +
+                  ",\"x\":" + std::to_string(o.x) + ",\"y\":" + std::to_string(o.y) +
+                  ",\"width\":" + std::to_string(o.width) + ",\"height\":" + std::to_string(o.height) +
+                  ",\"scale\":" + scale + ",\"primary\":" + (o.primary ? "true" : "false") + "}";
+            }
+          } catch (const std::exception& error) { std::cerr << "Listing outputs failed: " << error.what() << '\n'; }
+          outputs = ",\"outputs\":[" + outputs + "]";
+        }
         const std::string json = "{\"version\":1,\"backend\":\"" + backend +
             "\",\"width\":" + std::to_string(s->width) + ",\"height\":" + std::to_string(s->height) +
             ",\"fps\":" + std::to_string(s->config.fps) +
@@ -609,7 +683,7 @@ int callback(lws* wsi, lws_callback_reasons reason, void* user, void* in, size_t
             ",\"input_endpoint\":\"/input\",\"max_input_batch\":" + std::to_string(max_input_batch) +
             ",\"audio\":false,\"clipboard\":" + (s->clipboard.available() ? "true" : "false") +
             ",\"clipboard_endpoint\":\"/clipboard\",\"max_clipboard_bytes\":" + std::to_string(max_clipboard_bytes) +
-            ",\"resize\":false,\"ime\":false" +
+            ",\"resize\":false,\"ime\":false" + outputs +
             (s->config.tiles ? std::string(relay_has_h264 ? ",\"codecs\":[\"h264\",\"tiles\"]" : ",\"codecs\":[\"tiles\"]") + ",\"tiles_version\":1,\"tiles_max_inflight\":4,\"tiles_scale\":\"integer\"" + std::string(s->config.gpu_scale ? ",\"tiles_scale_gpu\":true" : "") + "}" : ",\"codecs\":[\"h264\"]}");
         return jsonResponse(wsi, response, HTTP_STATUS_OK, json);
       }
@@ -651,7 +725,7 @@ int callback(lws* wsi, lws_callback_reasons reason, void* user, void* in, size_t
         closeScreenshot(s, wsi, response); return completeResponse(wsi, response);
       }
       if (!response->length) return 0;
-      unsigned char buffer[LWS_PRE+2048];
+      unsigned char buffer[LWS_PRE+sizeof(response->body)];
       std::memcpy(buffer+LWS_PRE, response->body, response->length);
       const size_t count = response->length;
       response->length = 0;
@@ -697,6 +771,7 @@ int callback(lws* wsi, lws_callback_reasons reason, void* user, void* in, size_t
       // Built without x264: a video stream must ask for the tiles codec.
       if (parsed.socket != Socket::control && !parsed.tiles) return 1;
 #endif
+      if (!parsed.output.empty() && parsed.output != s->config.output && !backendFor(s->config.backend).captureOutput) return 1;
       auto* response = static_cast<HttpResponse*>(user);
       response->grant_id = 0;
       // The session token keeps the browser Origin check. A grant is already a
@@ -712,6 +787,7 @@ int callback(lws* wsi, lws_callback_reasons reason, void* user, void* in, size_t
       if (!s->planConnection(parsed.socket, response->grant_id != 0).open && parsed.socket != Socket::control) return 1;
       response->socket = parsed.socket; response->clipboard = parsed.clipboard; response->tiles = parsed.tiles; response->tiles_inflight = parsed.tiles_inflight;
       response->tiles_width = parsed.tiles_width; response->tiles_height = parsed.tiles_height;
+      std::snprintf(response->output, sizeof(response->output), "%s", parsed.output.c_str());
       return 0;
     }
     case LWS_CALLBACK_ESTABLISHED: {
@@ -734,13 +810,15 @@ int callback(lws* wsi, lws_callback_reasons reason, void* user, void* in, size_t
         return 0;
       }
       if (socket == Socket::control) {
+        const std::string output = response->output == s->config.output ? std::string() : std::string(response->output);
+        if (!s->input->selectOutput(output)) { s->evict(wsi, LWS_CLOSE_STATUS_POLICY_VIOLATION, "unknown output"); return 0; }
         s->control = wsi; s->control_generation = ++s->nextGeneration; s->control_received.clear();
         s->input->resetLocks();
         s->control_ready = true; lws_callback_on_writable(wsi);
         return 0;
       }
       return s->startStream(wsi, socket, plan, response->clipboard, response->tiles, response->tiles_inflight,
-                            response->tiles_width, response->tiles_height);
+                            response->tiles_width, response->tiles_height, response->output);
     }
     case LWS_CALLBACK_RECEIVE: {
       if (s->closing.count(wsi)) return 0;
@@ -764,7 +842,7 @@ int callback(lws* wsi, lws_callback_reasons reason, void* user, void* in, size_t
           !s->grants.active(response->grant_id, Grants::Clock::now())) { s->expireGrants(); return 0; }
       if (auto* stream = s->streamFor(wsi)) {
         const int result = stream->write(s->config.proxy);
-        if (stream->width) { s->width = stream->width; s->height = stream->height; }
+        if (stream->width && stream->output.empty()) { s->width = stream->width; s->height = stream->height; }
         return result;
       }
       return s->control == wsi ? s->writeControl(wsi) : -1;

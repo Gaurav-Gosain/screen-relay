@@ -1,4 +1,5 @@
 #include "core/capture-source.hpp"
+#include "outputs.hpp"
 #include <X11/Xlib.h>
 #include <X11/Xutil.h>
 #include <X11/extensions/Xdamage.h>
@@ -36,6 +37,8 @@ class X11CaptureSource final : public CaptureSource {
   int damage_event = 0;
   int cursor_event = 0;
   int width = 0, height = 0;
+  /// Root window position of the captured monitor; 0, 0 for the whole screen.
+  int origin_x = 0, origin_y = 0;
   bool cursor_dirty = true;
  public:
   X11CaptureSource() { shm.shmid = -1; shm.shmaddr = reinterpret_cast<char*>(-1); }
@@ -48,7 +51,7 @@ class X11CaptureSource final : public CaptureSource {
     if (damage) XDamageDestroy(display, damage);
     if (display) XCloseDisplay(display);
   }
-  void init() {
+  void init(const std::string& output = {}) {
     display = XOpenDisplay(nullptr);
     require(display, "opening X display failed");
     int ignored;
@@ -59,6 +62,12 @@ class X11CaptureSource final : public CaptureSource {
     require(XShmQueryExtension(display), "MIT-SHM unavailable");
     const int screen = DefaultScreen(display);
     width = DisplayWidth(display, screen); height = DisplayHeight(display, screen);
+    if (!output.empty()) {
+      const auto monitor = x11::findMonitor(display, output);
+      if (!monitor) throw std::runtime_error("Unknown X11 output '" + output + "'");
+      origin_x = monitor->x; origin_y = monitor->y; width = monitor->width; height = monitor->height;
+      requireSurfaceSize(width, height);
+    }
     image = XShmCreateImage(display, DefaultVisual(display, screen), DefaultDepth(display, screen),
                             ZPixmap, nullptr, &shm, width, height);
     require(image && image->bytes_per_line >= width * 4 && image->bytes_per_line <= width * 8 &&
@@ -140,15 +149,20 @@ class X11CaptureSource final : public CaptureSource {
     int count = 0;
     std::unique_ptr<XRectangle, decltype(&XFree)> fetched(XFixesFetchRegion(display, parts, &count), &XFree);
     if (fetched && count > 0) {
-      for (int i = 0; i < count; ++i)
-        rects.push_back({fetched.get()[i].x, fetched.get()[i].y, fetched.get()[i].width, fetched.get()[i].height});
+      for (int i = 0; i < count; ++i) {
+        // Root coordinates to monitor coordinates, clipped to the monitor.
+        const auto& r = fetched.get()[i];
+        const int x0 = std::max(0, r.x - origin_x), y0 = std::max(0, r.y - origin_y);
+        const int x1 = std::min(width, r.x + r.width - origin_x), y1 = std::min(height, r.y + r.height - origin_y);
+        if (x1 > x0 && y1 > y0) rects.push_back({x0, y0, x1 - x0, y1 - y0});
+      }
       rects_valid = true;
     }
   }
   FrameView grab(int x, int y, int width, int height) {
     const Window root = RootWindow(display, DefaultScreen(display));
     if (x == 0 && y == 0 && width == image->width && height == image->height) {
-      require(XShmGetImage(display, root, image, 0, 0, AllPlanes), "XShmGetImage failed");
+      require(XShmGetImage(display, root, image, origin_x, origin_y, AllPlanes), "XShmGetImage failed");
       return {reinterpret_cast<const uint8_t*>(image->data), image->bytes_per_line,
               image->width, image->height, pixelFormat(), 0, 0};
     }
@@ -158,7 +172,7 @@ class X11CaptureSource final : public CaptureSource {
     require(scratch, "creating sub-rect X image failed");
     scratch->data = shm.shmaddr;
     require(scratch->bytes_per_line == width * 4, "unexpected sub-rect X image stride");
-    const bool ok = XShmGetImage(display, root, scratch, x, y, AllPlanes);
+    const bool ok = XShmGetImage(display, root, scratch, origin_x + x, origin_y + y, AllPlanes);
     FrameView view{reinterpret_cast<const uint8_t*>(scratch->data), scratch->bytes_per_line,
                    width, height, pixelFormat(), x, y};
     scratch->data = nullptr;
@@ -200,6 +214,11 @@ bool initializeNativeBackend(const std::string&) {
 std::unique_ptr<CaptureSource> makeCaptureSource() {
   auto source = std::make_unique<X11CaptureSource>();
   source->init();
+  return source;
+}
+std::unique_ptr<CaptureSource> makeOutputCaptureSource(const std::string& output) {
+  auto source = std::make_unique<X11CaptureSource>();
+  source->init(output);
   return source;
 }
 }

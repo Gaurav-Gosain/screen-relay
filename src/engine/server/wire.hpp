@@ -31,9 +31,12 @@ struct Target {
   bool tiles = false;
   unsigned tiles_inflight = 1;  ///< tiles_inflight=K after codec=tiles, 1 to 4
   unsigned tiles_width = 0, tiles_height = 0;  ///< size=WxH after codec=tiles; 0 means the desktop size
+  std::string output;  ///< output=NAME anywhere in a /stream query; empty means the default output
 };
 /** Classifies /stream?view=1, /stream, /stream?take=1, /stream?clipboard=1, /stream?take=1&clipboard=1, and /control; any other target opens Socket::none.
-    A /stream target may end with codec=tiles (as its last parameter) to ask for the tiles codec. */
+    A /stream target may end with codec=tiles (as its last parameter) to ask for the tiles codec.
+    A /stream or /control target may also hold output=NAME once, at any place: a /stream captures that output,
+    and pointer input from the socket goes to it. */
 Target viewerTarget(const std::string& target);
 /** What opening a socket does to the sockets already open. */
 struct ConnectionPlan {

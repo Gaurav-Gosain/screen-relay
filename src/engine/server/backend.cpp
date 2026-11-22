@@ -8,6 +8,8 @@ bool initializeNativeBackend(const std::string& output);
 std::unique_ptr<CaptureSource> makeCaptureSource();
 std::unique_ptr<InputBackend> makeInputBackend();
 std::unique_ptr<ClipboardBackend> makeClipboard(ClipboardChanged changed);
+std::unique_ptr<CaptureSource> makeOutputCaptureSource(const std::string& output);
+std::vector<OutputDesc> listOutputs();
 }
 #endif
 #ifdef RELAY_BACKEND_wayland
@@ -16,6 +18,8 @@ bool initializeNativeBackend(const std::string& output);
 std::unique_ptr<CaptureSource> makeCaptureSource();
 std::unique_ptr<InputBackend> makeInputBackend();
 std::unique_ptr<ClipboardBackend> makeClipboard(ClipboardChanged changed);
+std::unique_ptr<CaptureSource> makeOutputCaptureSource(const std::string& output);
+std::vector<OutputDesc> listOutputs();
 }
 #endif
 #ifdef RELAY_BACKEND_windows
@@ -38,16 +42,18 @@ std::unique_ptr<ClipboardBackend> makeClipboard(ClipboardChanged changed);
 namespace {
 const Backend backends[] = {
 #ifdef RELAY_BACKEND_x11
-  {"x11", x11::initializeNativeBackend, x11::makeCaptureSource, x11::makeInputBackend, x11::makeClipboard},
+  {"x11", x11::initializeNativeBackend, x11::makeCaptureSource, x11::makeInputBackend, x11::makeClipboard,
+   x11::makeOutputCaptureSource, x11::listOutputs},
 #endif
 #ifdef RELAY_BACKEND_wayland
-  {"wayland", wayland::initializeNativeBackend, wayland::makeCaptureSource, wayland::makeInputBackend, wayland::makeClipboard},
+  {"wayland", wayland::initializeNativeBackend, wayland::makeCaptureSource, wayland::makeInputBackend, wayland::makeClipboard,
+   wayland::makeOutputCaptureSource, wayland::listOutputs},
 #endif
 #ifdef RELAY_BACKEND_windows
-  {"windows", windows::initializeNativeBackend, windows::makeCaptureSource, windows::makeInputBackend, windows::makeClipboard},
+  {"windows", windows::initializeNativeBackend, windows::makeCaptureSource, windows::makeInputBackend, windows::makeClipboard, nullptr, nullptr},
 #endif
 #ifdef RELAY_BACKEND_macos
-  {"macos", macos::initializeNativeBackend, macos::makeCaptureSource, macos::makeInputBackend, macos::makeClipboard},
+  {"macos", macos::initializeNativeBackend, macos::makeCaptureSource, macos::makeInputBackend, macos::makeClipboard, nullptr, nullptr},
 #endif
 };
 }

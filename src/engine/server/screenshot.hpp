@@ -15,7 +15,8 @@ class Screenshot {
  public:
   ~Screenshot() { stop(); }
   void start(lws_context* context);
-  bool request();
+  /// Asks for one PNG of output (empty is the default output).
+  bool request(const std::string& output = {});
   bool take(std::vector<uint8_t>& bytes, std::string& error);
   void finish();
   void stop();
@@ -25,7 +26,7 @@ class Screenshot {
   std::thread worker_;
   bool busy_ = false, requested_ = false, complete_ = false, stopping_ = false;
   std::vector<uint8_t> bytes_;
-  std::string error_;
+  std::string error_, output_;
   void run(lws_context* context);
 };
 }  // namespace relay

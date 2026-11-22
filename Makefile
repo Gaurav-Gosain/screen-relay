@@ -9,7 +9,7 @@ endif
 BACKENDS ?= x11
 HAS_WAYLAND = $(filter wayland,$(BACKENDS))
 AVAILABLE_BACKENDS = x11 wayland windows macos
-BACKEND_PKGS_x11 = x11 xext xdamage xfixes xtst
+BACKEND_PKGS_x11 = x11 xext xdamage xfixes xtst xrandr
 BACKEND_DIR_x11 = linux/x11
 BACKEND_PKGS_wayland = wayland-client xkbcommon
 BACKEND_DIR_wayland = linux/wayland
@@ -49,7 +49,7 @@ BACKEND_OBJCXXFLAGS = $(if $(filter %.mm,$(BACKEND_SRCS)),-fobjc-arc)
 ENGINE_SRCS = $(CORE_SRCS) $(wildcard src/engine/server/*.cpp) $(BACKEND_SRCS)
 HEADERS = $(wildcard src/engine/*/*.hpp src/engine/backends/linux/*.hpp) $(foreach dir,$(BACKEND_DIRS),$(wildcard src/engine/backends/$(dir)/*.hpp))
 
-WAYLAND_PROTOCOLS = wlr-data-control-unstable-v1 wlr-screencopy-unstable-v1 wlr-virtual-pointer-unstable-v1 virtual-keyboard-unstable-v1
+WAYLAND_PROTOCOLS = wlr-data-control-unstable-v1 wlr-screencopy-unstable-v1 wlr-virtual-pointer-unstable-v1 virtual-keyboard-unstable-v1 xdg-output-unstable-v1
 .PHONY: all deps install test test-color test-flow test-capture-bucket test-cpu-budget test-input test-backend test-server test-keymap test-macos-keys test-tiles bench-tiles clean FORCE
 all: relay-engine
 

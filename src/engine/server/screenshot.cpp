@@ -26,8 +26,10 @@ void chunk(std::vector<uint8_t>& bytes, const char* type, const uint8_t* data, s
 struct Resources {
   std::unique_ptr<CaptureSource> source;
   int width = 0, height = 0;
-  void init(const Backend& backend) {
-    source = backend.capture();
+  std::string output;
+  void init(const Backend& backend, const std::string& name) {
+    output = name;
+    source = name.empty() || !backend.captureOutput ? backend.capture() : backend.captureOutput(name);
     require(bool(source), "screenshot source unavailable");
     const auto dimensions = source->dimensions();
     width = dimensions.first; height = dimensions.second;
@@ -68,9 +70,10 @@ struct Resources {
 void Screenshot::start(lws_context* context) {
   worker_ = std::thread([this, context] { run(context); });
 }
-bool Screenshot::request() {
+bool Screenshot::request(const std::string& output) {
   std::lock_guard<std::mutex> lock(mutex_);
   if (busy_ || stopping_) return false;
+  output_ = output;
   busy_ = requested_ = true; ready_.notify_one(); return true;
 }
 bool Screenshot::take(std::vector<uint8_t>& bytes, std::string& error) {
@@ -88,15 +91,18 @@ void Screenshot::run(lws_context* context) {
   const auto& backend = backendFor(static_cast<Server*>(lws_context_user(context))->config.backend);
   std::unique_ptr<Resources> resources;
   for (;;) {
+    std::string output;
     { std::unique_lock<std::mutex> lock(mutex_);
       ready_.wait(lock, [this] { return stopping_ || requested_; });
       if (stopping_) return;
       requested_ = false;
+      output = output_;
     }
     std::vector<uint8_t> result;
     std::string error;
     try {
-      if (!resources) { resources = std::make_unique<Resources>(); resources->init(backend); }
+      if (resources && resources->output != output) resources.reset();
+      if (!resources) { resources = std::make_unique<Resources>(); resources->init(backend, output); }
       result = resources->capture();
     } catch (const std::exception& failure) { error = failure.what(); resources.reset(); }
     { std::lock_guard<std::mutex> lock(mutex_);

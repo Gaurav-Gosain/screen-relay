@@ -215,6 +215,24 @@ int main() {
                            "/stream?view=0&codec=tiles", "/codec=tiles"}) {
     assert(viewerTarget(text).socket == Socket::none);
   }
+  // output=NAME, once, at any place in a /stream query.
+  {
+    const auto a = viewerTarget("/stream?view=1&output=DP-3&codec=tiles");
+    assert(a.socket == Socket::watch && a.tiles && a.output == "DP-3");
+    const auto b = viewerTarget("/stream?output=HEADLESS-2&take=1&clipboard=1&codec=tiles&size=640x480");
+    assert(b.socket == Socket::take && b.clipboard && b.tiles && b.tiles_width == 640 && b.output == "HEADLESS-2");
+    const auto c = viewerTarget("/stream?output=eDP-1");
+    assert(c.socket == Socket::stream && !c.tiles && c.output == "eDP-1");
+    const auto d = viewerTarget("/stream?view=1&codec=tiles&output=DP-1");
+    assert(d.socket == Socket::watch && d.tiles && d.output == "DP-1");
+    assert(viewerTarget("/stream?view=1").output.empty());
+    const auto e = viewerTarget("/control?output=DP-2");
+    assert(e.socket == Socket::control && e.output == "DP-2");
+  }
+  for (const char* text : {"/stream?view=1&output=", "/stream?view=1&output=a/b", "/stream?view=1&output=DP-1&output=DP-2",
+                           "/control?output=DP-1&output=DP-2", "/stream?view=1&output=a%20b", "/stream?output=DP-1&view=2"}) {
+    assert(viewerTarget(text).socket == Socket::none);
+  }
   {
     EncodedFrame f;
     f.type = 8; f.sequence = 1; f.keyframe = true; f.annex_b.assign(20, 0); f.annex_b[0] = 1;

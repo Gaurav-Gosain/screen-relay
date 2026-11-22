@@ -3,6 +3,8 @@
 #include "virtual-keyboard-unstable-v1-client-protocol.h"
 #include "wlr-screencopy-unstable-v1-client-protocol.h"
 #include "wlr-virtual-pointer-unstable-v1-client-protocol.h"
+#include "xdg-output-unstable-v1-client-protocol.h"
+#include "core/output.hpp"
 #include <memory>
 #include <stdexcept>
 #include <string>
@@ -43,16 +45,26 @@ struct Connection {
   zwlr_screencopy_manager_v1* screencopyManager = nullptr;
   zwp_virtual_keyboard_manager_v1* virtualKeyboardManager = nullptr;
   zwlr_virtual_pointer_manager_v1* virtualPointerManager = nullptr;
+  zxdg_output_manager_v1* xdgOutputManager = nullptr;
+  /// Name of the bound output.
+  std::string outputName;
 
+  /// Binds the output chosen with --output, or the first one.
   Connection();
+  /// Binds the named output; empty means the one Connection() binds.
+  explicit Connection(const std::string& output);
   ~Connection();
   Connection(const Connection&) = delete;
   Connection& operator=(const Connection&) = delete;
+  /// Binds another output by name (empty is the default) on this connection; false keeps the current one.
+  bool rebind(const std::string& output);
+  /// Every output with its layout position and scale; the bound one is primary.
+  std::vector<OutputDesc> outputs();
 
  private:
   wl_registry* registry_ = nullptr;
   std::unique_ptr<OutputInfo> outputInfo_;
-  void initialize();
+  void initialize(const std::string& output);
   void cleanup();
 };
 
