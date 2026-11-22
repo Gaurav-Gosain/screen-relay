@@ -311,8 +311,9 @@ struct CaptureEncoder::Impl {
       std::unique_ptr<tiles::Encoder> tiles_encoder;
       // A source can report damage that changes no pixel, at the display refresh rate (Hyprland).
       // After quiet_after without a change, capture at most every quiet_interval until input or a change.
-      constexpr auto quiet_after = std::chrono::seconds(1);
-      constexpr auto quiet_interval = std::chrono::milliseconds(100);
+      // 33 ms keeps a change that comes without input (an agent's output) within two frames.
+      constexpr auto quiet_after = std::chrono::seconds(2);
+      constexpr auto quiet_interval = std::chrono::milliseconds(33);
       auto last_change = started;
       auto quiet_until = Clock::time_point::min();
       uint64_t inputs_seen = 0, measured_seen = 0;
