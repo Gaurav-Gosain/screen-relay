@@ -59,6 +59,8 @@ class CaptureSource {
   virtual bool scaleOutput(int /*width*/, int /*height*/) { return false; }
   /** Nanoseconds until the source wants drainDamage() called again without a ready fd, or -1 for none. */
   virtual int64_t timeoutNs() const { return -1; }
+  /** Called on the source owner thread when input arrived, so a source can look harder for the change it causes. */
+  virtual void inputActivity() {}
   virtual bool cursorSupported() const { return false; }
   // Called on the source owner thread after draining events, even when video is paused.
   virtual std::optional<CursorImage> cursor(bool /*force*/) { return std::nullopt; }

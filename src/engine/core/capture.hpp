@@ -5,6 +5,7 @@
 #include <functional>
 #include <memory>
 #include <string>
+#include <utility>
 #include <vector>
 
 namespace relay {
@@ -53,6 +54,8 @@ class CaptureEncoder {
                     unsigned tiles_width = 0, unsigned tiles_height = 0);
   /** Tells the capture that input arrived, so it leaves its quiet rate at once. */
   void inputActivity();
+  /** Input to the first changed frame sent after it, p50 and p99 in ms over the last 64; -1 before any. */
+  std::pair<double, double> inputLatencyMs() const;
   /** Makes the next tiles frame of this session a keyframe. */
   void requestKeyframe(uint32_t generation);
   void endSession(uint32_t generation);

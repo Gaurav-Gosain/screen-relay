@@ -12,6 +12,7 @@
 #include <x264.h>
 #endif
 #include <algorithm>
+#include <array>
 #include <atomic>
 #include <cassert>
 #include <chrono>
@@ -260,6 +261,14 @@ struct CaptureEncoder::Impl {
   uint64_t input_events = 0;
   CaptureStats counters;
   void wake() { wake_event.signal(); }
+  // Input to the first changed frame sent after it, the last 64 samples, in microseconds.
+  std::array<uint32_t, 64> input_latency{};
+  unsigned input_latency_count = 0;
+  void noteInputLatency(Clock::duration d) {
+    std::lock_guard<std::mutex> lock(mutex);
+    const auto us = std::chrono::duration_cast<std::chrono::microseconds>(d).count();
+    input_latency[input_latency_count++ % input_latency.size()] = uint32_t(std::min<int64_t>(us, UINT32_MAX));
+  }
   void run() {
     try {
       capture_frame_rate.store(settings.fps);
@@ -305,6 +314,8 @@ struct CaptureEncoder::Impl {
       auto last_change = started;
       auto quiet_until = Clock::time_point::min();
       uint64_t inputs_seen = 0;
+      bool input_seen = false;  // input arrived since the last loop: tell the source
+      Clock::time_point input_at{};  // first input not yet followed by a changed frame
       unsigned cascade_frames = 0;
       uint64_t first_refinement_size = 0;
       auto reset_refinement = [&] {
@@ -333,7 +344,11 @@ struct CaptureEncoder::Impl {
             keys_done = key_requests;
           }
           keys_wanted = key_requests;
-          if (input_events != inputs_seen) { inputs_seen = input_events; last_change = Clock::now(); quiet_until = Clock::time_point::min(); }
+          if (input_events != inputs_seen) {
+            inputs_seen = input_events; last_change = Clock::now(); quiet_until = Clock::time_point::min();
+            input_seen = true;
+            if (input_at == Clock::time_point{}) input_at = last_change;
+          }
           key_request = tiles_mode && keys_wanted != keys_done;
           gen = generation; rev = revision; rate = bitrate;
           cursor_active = gen != 0 && active && bool(publish_cursor);
@@ -346,6 +361,7 @@ struct CaptureEncoder::Impl {
                      sequence < std::numeric_limits<uint32_t>::max();
           seq = sequence + (admitted ? 1 : 0);
         }
+        if (input_seen) { input_seen = false; source->inputActivity(); }
         bool cursor_published = false;
         if (cursor_active) {
           if (auto cursor = source->cursor(refresh_cursor)) {
@@ -431,6 +447,10 @@ struct CaptureEncoder::Impl {
                 force_idr = false;
                 keys_done = keys_wanted;
                 last_publish = Clock::now();
+                if (input_at != Clock::time_point{} && !key) {
+                  noteInputLatency(last_publish - input_at);
+                  input_at = {};
+                }
               }
             } else if (built) {
               dirty = true; force_idr = true;
@@ -656,6 +676,14 @@ void CaptureEncoder::beginSession(uint32_t generation, bool tiles, unsigned tile
     ++i.revision;
     i.wake();
   }
+}
+std::pair<double, double> CaptureEncoder::inputLatencyMs() const {
+  std::lock_guard<std::mutex> lock(impl_->mutex);
+  const unsigned n = std::min<unsigned>(impl_->input_latency_count, unsigned(impl_->input_latency.size()));
+  if (!n) return {-1, -1};
+  std::array<uint32_t, 64> sorted = impl_->input_latency;
+  std::sort(sorted.begin(), sorted.begin() + n);
+  return {sorted[n / 2] / 1000.0, sorted[std::min(n - 1, n * 99 / 100)] / 1000.0};
 }
 void CaptureEncoder::inputActivity() {
   auto& i = *impl_;

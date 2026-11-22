@@ -181,6 +181,9 @@ class WaylandCaptureSource final : public CaptureSource {
   Clock::time_point lastCompare{}, setAsideUntil{};
   int setAside = -1;  // buffer of the set-aside frame, -1 for none
   int phase = 0;      // rows compared first: y % 8 == phase, a new phase each time
+  // After input: full compares for 500 ms, and no frame set aside until a change shows.
+  Clock::time_point inputUntil{};
+  bool inputPending = false;
   std::vector<DamageRect> damage;
   const int width, height;
   int current = -1;
@@ -278,7 +281,8 @@ class WaylandCaptureSource final : public CaptureSource {
       auto& buffer = *buffers[target];
       buffer.orient(frame->flags & ZWLR_SCREENCOPY_FRAME_V1_FLAGS_Y_INVERT);
       failures = 0;
-      if (damageCopy && session && !frame->catchUp && Clock::now() - lastCompare < interval()) {
+      const bool afterInput = Clock::now() < inputUntil;
+      if (damageCopy && session && !frame->catchUp && !(inputPending && afterInput) && Clock::now() - lastCompare < interval()) {
         frame.reset();
         setAside = target;
         setAsideUntil = lastCompare + interval();
@@ -294,9 +298,10 @@ class WaylandCaptureSource final : public CaptureSource {
           // Every 8th row first, against the last frame sent: a change shows within 8 frames even
           // when it is too small to hit these rows, then the full compare gives the exact boxes.
           phase = (phase + 1) % 8;
-          if (sampledRowsDiffer(buffer.data, before->data, buffer.width, buffer.height, buffer.stride, phase, 8))
+          if (afterInput || sampledRowsDiffer(buffer.data, before->data, buffer.width, buffer.height, buffer.stride, phase, 8))
             changedBands(buffer.data, before->data, buffer.width, buffer.height, buffer.stride, frame->damage);
           lastCompare = Clock::now();
+          if (!frame->damage.empty()) inputPending = false;
           if (frame->damage.empty()) {
             // Not a pixel changed. Keep the current frame and ask again into the same buffer.
             frame.reset();
@@ -409,6 +414,11 @@ class WaylandCaptureSource final : public CaptureSource {
   std::pair<int, int> dimensions() const override { return {width, height}; }
   PixelFormat pixelFormat() const override { return PixelFormat::BGRA; }
   bool cursorSupported() const override { return false; }
+  void inputActivity() override {
+    inputUntil = Clock::now() + std::chrono::milliseconds(500);
+    inputPending = true;
+  }
+
   int64_t timeoutNs() const override {
     if (setAside < 0) return -1;
     return std::max<int64_t>(0, std::chrono::duration_cast<std::chrono::nanoseconds>(setAsideUntil - Clock::now()).count());

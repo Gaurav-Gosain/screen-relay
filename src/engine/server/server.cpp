@@ -315,8 +315,10 @@ std::string Server::metrics() {
   return streams[0]->metrics();
 }
 std::string Server::Stream::metrics() {
+  const auto input = capture.inputLatencyMs();
   std::lock_guard<std::mutex> lock(mutex);
-  return ",\"inflight_frames\":" + std::to_string(flow.frames.size()) +
+  return ",\"input_to_frame_ms_p50\":" + std::to_string(input.first) + ",\"input_to_frame_ms_p99\":" + std::to_string(input.second) +
+      ",\"inflight_frames\":" + std::to_string(flow.frames.size()) +
       ",\"inflight_bytes\":" + std::to_string(flow.bytes) +
       ",\"window_frames\":" + std::to_string(flow.window) +
       ",\"target_bitrate_bps\":" + std::to_string(flow.target_bitrate) +
