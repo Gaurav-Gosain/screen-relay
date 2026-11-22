@@ -93,6 +93,13 @@ void global(void* data, wl_registry* registry, uint32_t name, const char* interf
              version >= 2 && !connection.virtualPointerManager) {
     connection.virtualPointerManager = static_cast<zwlr_virtual_pointer_manager_v1*>(wl_registry_bind(
       registry, name, &zwlr_virtual_pointer_manager_v1_interface, 2));
+  } else if (std::strcmp(interface, ext_image_copy_capture_manager_v1_interface.name) == 0 && !connection.imageCopyManager) {
+    connection.imageCopyManager = static_cast<ext_image_copy_capture_manager_v1*>(wl_registry_bind(
+      registry, name, &ext_image_copy_capture_manager_v1_interface, 1));
+  } else if (std::strcmp(interface, ext_output_image_capture_source_manager_v1_interface.name) == 0 &&
+             !connection.outputSourceManager) {
+    connection.outputSourceManager = static_cast<ext_output_image_capture_source_manager_v1*>(wl_registry_bind(
+      registry, name, &ext_output_image_capture_source_manager_v1_interface, 1));
   } else if (std::strcmp(interface, zxdg_output_manager_v1_interface.name) == 0 && !connection.xdgOutputManager) {
     connection.xdgOutputManager = static_cast<zxdg_output_manager_v1*>(wl_registry_bind(
       registry, name, &zxdg_output_manager_v1_interface, std::min(version, 3u)));
@@ -218,6 +225,8 @@ std::vector<OutputDesc> Connection::outputs() {
 }
 
 void Connection::cleanup() {
+  if (outputSourceManager) ext_output_image_capture_source_manager_v1_destroy(outputSourceManager);
+  if (imageCopyManager) ext_image_copy_capture_manager_v1_destroy(imageCopyManager);
   if (xdgOutputManager) zxdg_output_manager_v1_destroy(xdgOutputManager);
   if (virtualPointerManager) zwlr_virtual_pointer_manager_v1_destroy(virtualPointerManager);
   if (virtualKeyboardManager) zwp_virtual_keyboard_manager_v1_destroy(virtualKeyboardManager);
@@ -227,6 +236,8 @@ void Connection::cleanup() {
   outputInfo_.reset();
   if (display) wl_display_disconnect(display);
   xdgOutputManager = nullptr;
+  imageCopyManager = nullptr;
+  outputSourceManager = nullptr;
   virtualPointerManager = nullptr;
   virtualKeyboardManager = nullptr;
   screencopyManager = nullptr;

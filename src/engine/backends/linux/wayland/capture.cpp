@@ -1,4 +1,5 @@
 #include "wayland.hpp"
+#include "core/bands.hpp"
 #include "core/capture-source.hpp"
 #include <sys/mman.h>
 #include <poll.h>
@@ -19,7 +20,6 @@
 namespace relay::wayland {
 namespace {
 constexpr size_t max_damage_rects = 64;
-constexpr int band_rows = 64, band_columns = 64;
 void checkSize(int width, int height) {
   try {
     requireSurfaceSize(width, height);
@@ -71,14 +71,19 @@ struct Buffer {
 
 struct Frame {
   zwlr_screencopy_frame_v1* proxy = nullptr;
+  ext_image_copy_capture_frame_v1* image = nullptr;  // ext-image-copy-capture in place of proxy
   int target = 0;
   bool damageCopy = false, hasShm = false, hasDmabuf = false;
+  bool catchUp = false;  // asked with buffer damage after a set-aside frame, so it is never set aside
   bool bufferDone = false, copied = false, ready = false, failed = false;
   uint32_t format = 0, width = 0, height = 0, stride = 0, dmabufFormat = 0, flags = 0;
   std::vector<DamageRect> damage;
   std::exception_ptr error;
 
-  ~Frame() { if (proxy) zwlr_screencopy_frame_v1_destroy(proxy); }
+  ~Frame() {
+    if (proxy) zwlr_screencopy_frame_v1_destroy(proxy);
+    if (image) ext_image_copy_capture_frame_v1_destroy(image);
+  }
 };
 
 void frameBuffer(void* data, zwlr_screencopy_frame_v1*, uint32_t format,
@@ -123,36 +128,59 @@ const zwlr_screencopy_frame_v1_listener frameListener = {
   frameBuffer, frameFlags, frameReady, frameFailed, frameDamage, frameDmabuf, frameBufferDone
 };
 
-/// Appends the parts of now that differ from before: one box per band of 64 rows, from the first to the
-/// last changed 64-pixel column. Both buffers have the same size, stride and format.
-void changedBands(const Buffer& now, const Buffer& before, std::vector<DamageRect>& out) {
-  const int columns = (now.width + band_columns - 1) / band_columns;
-  for (int y0 = 0; y0 < now.height; y0 += band_rows) {
-    const int y1 = std::min(now.height, y0 + band_rows);
-    const auto changed = [&](int column) {
-      const size_t x = size_t(column) * band_columns * 4;
-      const size_t bytes = size_t(std::min(band_columns, now.width - column * band_columns)) * 4;
-      for (int y = y0; y < y1; ++y) {
-        const size_t at = size_t(y) * size_t(now.stride) + x;
-        if (std::memcmp(now.data + at, before.data + at, bytes) != 0) return true;
-      }
-      return false;
-    };
-    // The box of this band: the first changed column from the left, then from the right.
-    int first = 0;
-    while (first < columns && !changed(first)) ++first;
-    if (first == columns) continue;
-    int last = columns - 1;
-    while (last > first && !changed(last)) --last;
-    const int x0 = first * band_columns, x1 = std::min(now.width, (last + 1) * band_columns);
-    out.push_back({x0, y0, x1 - x0, y1 - y0});
+// ext-image-copy-capture: one session for the output; each frame copies into a buffer the source owns.
+struct Session {
+  ext_image_capture_source_v1* source = nullptr;
+  ext_image_copy_capture_session_v1* proxy = nullptr;
+  uint32_t width = 0, height = 0, format = 0;
+  bool hasFormat = false, done = false, stopped = false;
+  ~Session() {
+    if (proxy) ext_image_copy_capture_session_v1_destroy(proxy);
+    if (source) ext_image_capture_source_v1_destroy(source);
+  }
+};
+void sessionSize(void* data, ext_image_copy_capture_session_v1*, uint32_t width, uint32_t height) {
+  auto& session = *static_cast<Session*>(data);
+  session.width = width; session.height = height;
+}
+void sessionShm(void* data, ext_image_copy_capture_session_v1*, uint32_t format) {
+  auto& session = *static_cast<Session*>(data);
+  if (format == WL_SHM_FORMAT_XRGB8888 || (format == WL_SHM_FORMAT_ARGB8888 && !session.hasFormat)) {
+    session.format = format; session.hasFormat = true;
   }
 }
+void sessionDevice(void*, ext_image_copy_capture_session_v1*, wl_array*) {}
+void sessionDmabuf(void*, ext_image_copy_capture_session_v1*, uint32_t, wl_array*) {}
+void sessionDone(void* data, ext_image_copy_capture_session_v1*) { static_cast<Session*>(data)->done = true; }
+void sessionStopped(void* data, ext_image_copy_capture_session_v1*) { static_cast<Session*>(data)->stopped = true; }
+const ext_image_copy_capture_session_v1_listener sessionListener = {
+  sessionSize, sessionShm, sessionDevice, sessionDmabuf, sessionDone, sessionStopped
+};
+void imageTransform(void*, ext_image_copy_capture_frame_v1*, uint32_t) {}
+void imageDamage(void* data, ext_image_copy_capture_frame_v1*, int32_t x, int32_t y, int32_t width, int32_t height) {
+  if (x < 0 || y < 0 || width <= 0 || height <= 0) return;
+  frameDamage(data, nullptr, uint32_t(x), uint32_t(y), uint32_t(width), uint32_t(height));
+}
+void imageTime(void*, ext_image_copy_capture_frame_v1*, uint32_t, uint32_t, uint32_t) {}
+void imageReady(void* data, ext_image_copy_capture_frame_v1*) { static_cast<Frame*>(data)->ready = true; }
+void imageFailed(void* data, ext_image_copy_capture_frame_v1*, uint32_t) { static_cast<Frame*>(data)->failed = true; }
+const ext_image_copy_capture_frame_v1_listener imageListener = {
+  imageTransform, imageDamage, imageTime, imageReady, imageFailed
+};
 
 class WaylandCaptureSource final : public CaptureSource {
   Connection connection;
   std::array<std::unique_ptr<Buffer>, 3> buffers;
   std::unique_ptr<Frame> frame;
+  std::unique_ptr<Session> session;  // set when the compositor has ext-image-copy-capture
+  std::array<bool, 3> fresh{};        // the buffer was never copied into, so the whole of it is damage
+  // Hyprland renders some outputs at the refresh rate without a pixel change. A frame that comes
+  // sooner than 1/fps after the last compare is set aside; at the end of the interval the source asks
+  // again with buffer damage, which the compositor answers at once with the latest picture.
+  using Clock = std::chrono::steady_clock;
+  Clock::time_point lastCompare{}, setAsideUntil{};
+  int setAside = -1;  // buffer of the set-aside frame, -1 for none
+  int phase = 0;      // rows compared first: y % 8 == phase, a new phase each time
   std::vector<DamageRect> damage;
   const int width, height;
   int current = -1;
@@ -160,9 +188,36 @@ class WaylandCaptureSource final : public CaptureSource {
   int deferred = -1;
   unsigned failures = 0;
 
-  void request(int target, bool damageCopy) {
+  Clock::duration interval() const {
+    const unsigned fps = capture_frame_rate.load();
+    return std::chrono::nanoseconds(1000000000LL / (fps ? fps : 60));
+  }
+
+  void request(int target, bool damageCopy, bool catchUp = false) {
     auto next = std::make_unique<Frame>();
-    next->target = target; next->damageCopy = damageCopy;
+    next->target = target; next->damageCopy = damageCopy; next->catchUp = catchUp;
+    if (session) {
+      // ext-image-copy-capture answers when the output renders new content. A frame with buffer
+      // damage is answered at once, so a full capture and the first use of a buffer damage all of it.
+      auto& buffer = buffers[target];
+      if (!buffer) {
+        buffer = std::make_unique<Buffer>();
+        buffer->init(connection.shm, session->format, width, height, width * 4);
+        fresh[target] = true;
+      }
+      next->width = uint32_t(width); next->height = uint32_t(height);
+      next->image = ext_image_copy_capture_session_v1_create_frame(session->proxy);
+      require(next->image, "requesting Wayland image copy frame failed");
+      require(ext_image_copy_capture_frame_v1_add_listener(next->image, &imageListener, next.get()) == 0,
+              "listening for Wayland image copy frame failed");
+      ext_image_copy_capture_frame_v1_attach_buffer(next->image, buffer->proxy);
+      if (!damageCopy || fresh[target] || catchUp) ext_image_copy_capture_frame_v1_damage_buffer(next->image, 0, 0, width, height);
+      fresh[target] = false;
+      ext_image_copy_capture_frame_v1_capture(next->image);
+      next->copied = true;
+      frame = std::move(next);
+      return;
+    }
     next->proxy = zwlr_screencopy_manager_v1_capture_output(connection.screencopyManager, 0, connection.output);
     require(next->proxy, "requesting Wayland screencopy frame failed");
     require(zwlr_screencopy_frame_v1_add_listener(next->proxy, &frameListener, next.get()) == 0,
@@ -197,6 +252,7 @@ class WaylandCaptureSource final : public CaptureSource {
   }
 
   bool process() {
+    if (session && session->stopped) throw std::runtime_error("Wayland image copy session stopped");
     if (!frame) return false;
     if (frame->hasShm && (frame->width != static_cast<uint32_t>(width) ||
                           frame->height != static_cast<uint32_t>(height)))
@@ -210,6 +266,8 @@ class WaylandCaptureSource final : public CaptureSource {
       const bool damageCopy = frame->damageCopy;
       frame.reset();
       if (!damageCopy) throw std::runtime_error("Wayland screencopy failed");
+      // A failed image copy frame can mean new buffer constraints; the session then says so.
+      if (session) fresh[target] = true;
       if (++failures >= 3) throw std::runtime_error("Wayland screencopy failed three consecutive times");
       request(target, true);
       return false;
@@ -220,6 +278,12 @@ class WaylandCaptureSource final : public CaptureSource {
       auto& buffer = *buffers[target];
       buffer.orient(frame->flags & ZWLR_SCREENCOPY_FRAME_V1_FLAGS_Y_INVERT);
       failures = 0;
+      if (damageCopy && session && !frame->catchUp && Clock::now() - lastCompare < interval()) {
+        frame.reset();
+        setAside = target;
+        setAsideUntil = lastCompare + interval();
+        return false;
+      }
       if (damageCopy) {
         // Hyprland reports the whole output on every frame. Then compare with the previous frame,
         // which the other buffer holds, so the encoder reads only what changed.
@@ -227,7 +291,18 @@ class WaylandCaptureSource final : public CaptureSource {
         if (wholeOutput(frame->damage) && current == 1 - target && before && before->format == buffer.format &&
             before->stride == buffer.stride && before->height == buffer.height) {
           frame->damage.clear();
-          changedBands(buffer, *before, frame->damage);
+          // Every 8th row first, against the last frame sent: a change shows within 8 frames even
+          // when it is too small to hit these rows, then the full compare gives the exact boxes.
+          phase = (phase + 1) % 8;
+          if (sampledRowsDiffer(buffer.data, before->data, buffer.width, buffer.height, buffer.stride, phase, 8))
+            changedBands(buffer.data, before->data, buffer.width, buffer.height, buffer.stride, frame->damage);
+          lastCompare = Clock::now();
+          if (frame->damage.empty()) {
+            // Not a pixel changed. Keep the current frame and ask again into the same buffer.
+            frame.reset();
+            request(target, true);
+            return false;
+          }
         }
         damage.insert(damage.end(), frame->damage.begin(), frame->damage.end());
         if (damage.size() > max_damage_rects) damage = {{0, 0, width, height}};
@@ -254,6 +329,12 @@ class WaylandCaptureSource final : public CaptureSource {
   }
 
   bool dispatch(int timeout) {
+    if (setAside >= 0 && !frame && Clock::now() >= setAsideUntil) {
+      const int target = setAside;
+      setAside = -1;
+      request(target, true, true);
+      flush();
+    }
     const bool hadFrame = bool(frame);
     require(wl_display_dispatch_pending(connection.display) >= 0, "dispatching Wayland events failed");
     bool dirty = process();
@@ -307,12 +388,31 @@ class WaylandCaptureSource final : public CaptureSource {
             "Wayland compositor must offer zwlr_screencopy_manager_v1 version 3");
     require(connection.shm, "Wayland compositor does not offer wl_shm");
     checkSize(width, height);
+    if (connection.imageCopyManager && connection.outputSourceManager) openSession();
+  }
+
+  /// Uses ext-image-copy-capture when the compositor has it. It waits for new content where
+  /// wlr-screencopy on Hyprland answers at the refresh rate. Falls back to wlr-screencopy.
+  void openSession() {
+    auto next = std::make_unique<Session>();
+    next->source = ext_output_image_capture_source_manager_v1_create_source(connection.outputSourceManager, connection.output);
+    if (!next->source) return;
+    next->proxy = ext_image_copy_capture_manager_v1_create_session(connection.imageCopyManager, next->source, 0);
+    if (!next->proxy || ext_image_copy_capture_session_v1_add_listener(next->proxy, &sessionListener, next.get()) != 0) return;
+    for (int i = 0; i < 4 && !next->done && !next->stopped; ++i)
+      if (wl_display_roundtrip(connection.display) < 0) return;
+    if (!next->done || next->stopped || !next->hasFormat || next->width != uint32_t(width) || next->height != uint32_t(height)) return;
+    session = std::move(next);
   }
 
   int fd() const override { return wl_display_get_fd(connection.display); }
   std::pair<int, int> dimensions() const override { return {width, height}; }
   PixelFormat pixelFormat() const override { return PixelFormat::BGRA; }
   bool cursorSupported() const override { return false; }
+  int64_t timeoutNs() const override {
+    if (setAside < 0) return -1;
+    return std::max<int64_t>(0, std::chrono::duration_cast<std::chrono::nanoseconds>(setAsideUntil - Clock::now()).count());
+  }
   bool drainDamage() override { return dispatch(0); }
 
   FrameView capture() override {

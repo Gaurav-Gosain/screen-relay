@@ -4,6 +4,8 @@
 #include "wlr-screencopy-unstable-v1-client-protocol.h"
 #include "wlr-virtual-pointer-unstable-v1-client-protocol.h"
 #include "xdg-output-unstable-v1-client-protocol.h"
+#include "ext-image-copy-capture-v1-client-protocol.h"
+#include "ext-image-capture-source-v1-client-protocol.h"
 #include "core/output.hpp"
 #include <memory>
 #include <stdexcept>
@@ -46,6 +48,8 @@ struct Connection {
   zwp_virtual_keyboard_manager_v1* virtualKeyboardManager = nullptr;
   zwlr_virtual_pointer_manager_v1* virtualPointerManager = nullptr;
   zxdg_output_manager_v1* xdgOutputManager = nullptr;
+  ext_image_copy_capture_manager_v1* imageCopyManager = nullptr;
+  ext_output_image_capture_source_manager_v1* outputSourceManager = nullptr;
   /// Name of the bound output.
   std::string outputName;
 

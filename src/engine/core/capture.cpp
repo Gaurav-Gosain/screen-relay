@@ -395,7 +395,8 @@ struct CaptureEncoder::Impl {
                 tiles_encoder->update(view, nullptr);
               } else {
                 if (!source->changedRects(rects)) rects = {{view.x, view.y, view.width, view.height}};
-                tiles_encoder->update(view, &rects);
+                // An empty list from the source means no change; the encoder would read it as the whole view.
+                if (!rects.empty()) tiles_encoder->update(view, &rects);
               }
             }
             const auto captured = Clock::now();
@@ -596,6 +597,7 @@ struct CaptureEncoder::Impl {
               wake_at - wait_now).count();
           timeout_ns = std::max<int64_t>(0, remaining);
         }
+        if (const int64_t later = source->timeoutNs(); later >= 0 && (timeout_ns < 0 || later < timeout_ns)) timeout_ns = later;
         if (wait(source->fd(), wake_event, timeout_ns).wake) wake_event.consume();
       }
     } catch (const std::exception& error) {

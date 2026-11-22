@@ -49,8 +49,8 @@ BACKEND_OBJCXXFLAGS = $(if $(filter %.mm,$(BACKEND_SRCS)),-fobjc-arc)
 ENGINE_SRCS = $(CORE_SRCS) $(wildcard src/engine/server/*.cpp) $(BACKEND_SRCS)
 HEADERS = $(wildcard src/engine/*/*.hpp src/engine/backends/linux/*.hpp) $(foreach dir,$(BACKEND_DIRS),$(wildcard src/engine/backends/$(dir)/*.hpp))
 
-WAYLAND_PROTOCOLS = wlr-data-control-unstable-v1 wlr-screencopy-unstable-v1 wlr-virtual-pointer-unstable-v1 virtual-keyboard-unstable-v1 xdg-output-unstable-v1
-.PHONY: all deps install test test-color test-flow test-capture-bucket test-cpu-budget test-input test-backend test-server test-keymap test-macos-keys test-tiles bench-tiles clean FORCE
+WAYLAND_PROTOCOLS = wlr-data-control-unstable-v1 wlr-screencopy-unstable-v1 wlr-virtual-pointer-unstable-v1 virtual-keyboard-unstable-v1 xdg-output-unstable-v1 ext-image-copy-capture-v1 ext-image-capture-source-v1 ext-foreign-toplevel-list-v1
+.PHONY: all deps install test test-color test-flow test-capture-bucket test-cpu-budget test-input test-backend test-server test-keymap test-macos-keys test-tiles test-bands bench-scroll bench-tiles clean FORCE
 all: relay-engine
 
 ifeq ($(HAS_WAYLAND),wayland)
@@ -135,6 +135,21 @@ build/tiles-bench: tests/bench/tiles-bench.cpp src/engine/core/tiles.cpp src/eng
 	mkdir -p build
 	$(CXX) -Isrc/engine $(CXXFLAGS) tests/bench/tiles-bench.cpp src/engine/core/tiles.cpp -o $@ $(shell pkg-config --cflags --libs libzstd)
 
+build/bands-test: tests/unit/bands-test.cpp src/engine/core/bands.cpp src/engine/core/bands.hpp
+	mkdir -p build
+	$(CXX) -Isrc/engine $(CXXFLAGS) tests/unit/bands-test.cpp src/engine/core/bands.cpp -o $@
+
+test-bands: build/bands-test
+	./build/bands-test
+
+build/scroll-bench: tests/bench/scroll-bench.cpp src/engine/core/bands.cpp src/engine/core/tiles.cpp src/engine/core/bands.hpp src/engine/core/tiles.hpp
+	mkdir -p build
+	$(CXX) -Isrc/engine $(CXXFLAGS) tests/bench/scroll-bench.cpp src/engine/core/bands.cpp src/engine/core/tiles.cpp -o $@ $(shell pkg-config --cflags --libs libzstd)
+
+# A terminal that scrolls under whole-output damage: make bench-scroll.
+bench-scroll: build/scroll-bench
+	./build/scroll-bench
+
 # Replays recorded frames: make bench-tiles TILES_FRAMES=DIR (see tests/bench/README.md).
 bench-tiles: build/tiles-bench
 	./build/tiles-bench $(TILES_FRAMES)
@@ -153,7 +168,7 @@ build/backend-source-test: tests/unit/backend-source-test.cpp $(CORE_SRCS) $(wil
 test-backend: build/backend-source-test
 	./build/backend-source-test
 
-SERVER_TEST_SRCS = src/engine/server/clipboard.cpp src/engine/server/config.cpp src/engine/server/metrics.cpp src/engine/server/wire.cpp src/engine/server/backend.cpp src/engine/core/input.cpp src/engine/core/wait.cpp $(BACKEND_SRCS)
+SERVER_TEST_SRCS = src/engine/core/bands.cpp src/engine/server/clipboard.cpp src/engine/server/config.cpp src/engine/server/metrics.cpp src/engine/server/wire.cpp src/engine/server/backend.cpp src/engine/core/input.cpp src/engine/core/wait.cpp $(BACKEND_SRCS)
 
 build/test-viewer/viewer.js:
 	mkdir -p build/test-viewer
@@ -181,7 +196,7 @@ build/macos-keys-test: tests/unit/macos-keys-test.cpp src/engine/backends/macos/
 test-macos-keys: build/macos-keys-test
 	./build/macos-keys-test
 
-test: test-tiles test-color test-flow test-capture-bucket test-cpu-budget test-input test-backend test-server $(if $(HAS_WAYLAND),test-keymap) $(if $(filter macos,$(BACKENDS)),test-macos-keys)
+test: test-tiles test-bands test-color test-flow test-capture-bucket test-cpu-budget test-input test-backend test-server $(if $(HAS_WAYLAND),test-keymap) $(if $(filter macos,$(BACKENDS)),test-macos-keys)
 
 clean:
 	rm -rf build relay-engine

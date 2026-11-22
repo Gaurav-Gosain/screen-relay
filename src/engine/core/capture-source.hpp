@@ -57,6 +57,8 @@ class CaptureSource {
   /** Asks for frames scaled to width x height by the capture system itself (0 x 0 is full size).
       Returns false when the source cannot scale; frames then stay full size. dimensions() gives the new size. */
   virtual bool scaleOutput(int /*width*/, int /*height*/) { return false; }
+  /** Nanoseconds until the source wants drainDamage() called again without a ready fd, or -1 for none. */
+  virtual int64_t timeoutNs() const { return -1; }
   virtual bool cursorSupported() const { return false; }
   // Called on the source owner thread after draining events, even when video is paused.
   virtual std::optional<CursorImage> cursor(bool /*force*/) { return std::nullopt; }
