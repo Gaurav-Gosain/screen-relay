@@ -325,6 +325,11 @@ bool Encoder::encode(bool keyframe, uint64_t pts_us, std::vector<uint8_t>& out, 
   }
   const size_t copies = ops.size();
   diffTiles(ops);
+  if (!keyframe && ops.empty()) {
+    // The damage did not change a pixel (Hyprland reports the whole output on every frame).
+    std::fill(dirty_.begin(), dirty_.end(), 0);
+    return false;
+  }
   // Size limit: drop pixel ops from the end until the message fits. Their tiles stay dirty.
   std::fill(dirty_.begin(), dirty_.end(), 0);
   size_t keep = ops.size();

@@ -5,6 +5,7 @@
 #include <unistd.h>
 #include <algorithm>
 #include <array>
+#include <cstring>
 #include <cerrno>
 #include <chrono>
 #include <cstdint>
@@ -18,7 +19,7 @@
 namespace relay::wayland {
 namespace {
 constexpr size_t max_damage_rects = 64;
-
+constexpr int band_rows = 64, band_columns = 64;
 void checkSize(int width, int height) {
   try {
     requireSurfaceSize(width, height);
@@ -122,6 +123,32 @@ const zwlr_screencopy_frame_v1_listener frameListener = {
   frameBuffer, frameFlags, frameReady, frameFailed, frameDamage, frameDmabuf, frameBufferDone
 };
 
+/// Appends the parts of now that differ from before: one box per band of 64 rows, from the first to the
+/// last changed 64-pixel column. Both buffers have the same size, stride and format.
+void changedBands(const Buffer& now, const Buffer& before, std::vector<DamageRect>& out) {
+  const int columns = (now.width + band_columns - 1) / band_columns;
+  for (int y0 = 0; y0 < now.height; y0 += band_rows) {
+    const int y1 = std::min(now.height, y0 + band_rows);
+    const auto changed = [&](int column) {
+      const size_t x = size_t(column) * band_columns * 4;
+      const size_t bytes = size_t(std::min(band_columns, now.width - column * band_columns)) * 4;
+      for (int y = y0; y < y1; ++y) {
+        const size_t at = size_t(y) * size_t(now.stride) + x;
+        if (std::memcmp(now.data + at, before.data + at, bytes) != 0) return true;
+      }
+      return false;
+    };
+    // The box of this band: the first changed column from the left, then from the right.
+    int first = 0;
+    while (first < columns && !changed(first)) ++first;
+    if (first == columns) continue;
+    int last = columns - 1;
+    while (last > first && !changed(last)) --last;
+    const int x0 = first * band_columns, x1 = std::min(now.width, (last + 1) * band_columns);
+    out.push_back({x0, y0, x1 - x0, y1 - y0});
+  }
+}
+
 class WaylandCaptureSource final : public CaptureSource {
   Connection connection;
   std::array<std::unique_ptr<Buffer>, 3> buffers;
@@ -129,6 +156,8 @@ class WaylandCaptureSource final : public CaptureSource {
   std::vector<DamageRect> damage;
   const int width, height;
   int current = -1;
+  /// Buffer the next damage request copies into, sent once the encoder took the current frame. -1: none waits.
+  int deferred = -1;
   unsigned failures = 0;
 
   void request(int target, bool damageCopy) {
@@ -192,16 +221,32 @@ class WaylandCaptureSource final : public CaptureSource {
       buffer.orient(frame->flags & ZWLR_SCREENCOPY_FRAME_V1_FLAGS_Y_INVERT);
       failures = 0;
       if (damageCopy) {
+        // Hyprland reports the whole output on every frame. Then compare with the previous frame,
+        // which the other buffer holds, so the encoder reads only what changed.
+        auto& before = buffers[1 - target];
+        if (wholeOutput(frame->damage) && current == 1 - target && before && before->format == buffer.format &&
+            before->stride == buffer.stride && before->height == buffer.height) {
+          frame->damage.clear();
+          changedBands(buffer, *before, frame->damage);
+        }
         damage.insert(damage.end(), frame->damage.begin(), frame->damage.end());
         if (damage.size() > max_damage_rects) damage = {{0, 0, width, height}};
         current = target;
       }
       frame.reset();
-      if (damageCopy) request(1 - target, true);
+      // Some compositors (Hyprland) answer every request at the output refresh rate with the whole
+      // output as damage. Ask again only after the encoder took this frame, so captures follow --fps.
+      if (damageCopy) deferred = 1 - target;
       return damageCopy;
     }
     if (frame->bufferDone && !frame->copied) copy();
     return false;
+  }
+
+  bool wholeOutput(const std::vector<DamageRect>& rects) const {
+    int64_t area = 0;
+    for (const auto& r : rects) area += int64_t(r.width) * r.height;
+    return area * 10 >= int64_t(width) * height * 9;
   }
 
   void flush() {
@@ -280,6 +325,11 @@ class WaylandCaptureSource final : public CaptureSource {
       captureBlocking(0);
       current = 0;
       request(1, true);
+      flush();
+    } else if (!frame && deferred >= 0) {
+      // The new request writes the other buffer, so the view returned here stays valid.
+      request(deferred, true);
+      deferred = -1;
       flush();
     }
     return buffers[current]->view();

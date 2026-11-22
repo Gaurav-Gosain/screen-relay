@@ -256,6 +256,8 @@ struct CaptureEncoder::Impl {
   bool session_tiles = false;
   unsigned session_inflight = 1, session_width = 0, session_height = 0;
   uint64_t key_requests = 0;
+  /// Counts input events; the capture runs at full rate again after each one.
+  uint64_t input_events = 0;
   CaptureStats counters;
   void wake() { wake_event.signal(); }
   void run() {
@@ -296,6 +298,13 @@ struct CaptureEncoder::Impl {
       bool source_scaled = false, rescale = false;
       uint64_t keys_done = 0;
       std::unique_ptr<tiles::Encoder> tiles_encoder;
+      // A source can report damage that changes no pixel, at the display refresh rate (Hyprland).
+      // After quiet_after without a change, capture at most every quiet_interval until input or a change.
+      constexpr auto quiet_after = std::chrono::seconds(1);
+      constexpr auto quiet_interval = std::chrono::milliseconds(100);
+      auto last_change = started;
+      auto quiet_until = Clock::time_point::min();
+      uint64_t inputs_seen = 0;
       unsigned cascade_frames = 0;
       uint64_t first_refinement_size = 0;
       auto reset_refinement = [&] {
@@ -324,6 +333,7 @@ struct CaptureEncoder::Impl {
             keys_done = key_requests;
           }
           keys_wanted = key_requests;
+          if (input_events != inputs_seen) { inputs_seen = input_events; last_change = Clock::now(); quiet_until = Clock::time_point::min(); }
           key_request = tiles_mode && keys_wanted != keys_done;
           gen = generation; rev = revision; rate = bitrate;
           cursor_active = gen != 0 && active && bool(publish_cursor);
@@ -368,7 +378,7 @@ struct CaptureEncoder::Impl {
         const auto now = Clock::now();
         const int64_t now_ns = ns(now.time_since_epoch());
         // A partial frame is finished at once, without a new capture and outside the frame budget.
-        if (tiles_mode && admitted && (dirty || key_request) && now >= retry_after && (continuing || bucket.ready(now_ns))) {
+        if (tiles_mode && admitted && (dirty || key_request) && now >= retry_after && (key_request || now >= quiet_until) && (continuing || bucket.ready(now_ns))) {
           const auto capture_start = Clock::now();
           try {
             const bool key = force_idr || key_request;
@@ -396,6 +406,8 @@ struct CaptureEncoder::Impl {
             bucket.spend(ns(encoded.time_since_epoch()));
             continuing = built && tiles_encoder->dirty();
             if (continuing) dirty = true;  // the size limit left damage: finish it next
+            if (built) last_change = encoded;
+            else if (encoded - last_change > quiet_after) quiet_until = encoded + quiet_interval;
             bool current = false;
             {
               std::lock_guard<std::mutex> lock(mutex);
@@ -577,6 +589,7 @@ struct CaptureEncoder::Impl {
           const int64_t wait_now_ns = ns(wait_now.time_since_epoch());
           auto wake_at = wait_now + std::chrono::nanoseconds(bucket.wait_ns(wait_now_ns));
           if (retry_after > wake_at) wake_at = retry_after;
+          if (tiles_mode && !key_request && quiet_until > wake_at) wake_at = quiet_until;
           if (refinement_pending && queue_empty && last_publish + refinement_pace > wake_at)
             wake_at = last_publish + refinement_pace;
           const auto remaining = std::chrono::duration_cast<std::chrono::nanoseconds>(
@@ -641,6 +654,12 @@ void CaptureEncoder::beginSession(uint32_t generation, bool tiles, unsigned tile
     ++i.revision;
     i.wake();
   }
+}
+void CaptureEncoder::inputActivity() {
+  auto& i = *impl_;
+  std::lock_guard<std::mutex> lock(i.mutex);
+  ++i.input_events;
+  i.wake();
 }
 void CaptureEncoder::requestKeyframe(uint32_t generation) {
   auto& i = *impl_;

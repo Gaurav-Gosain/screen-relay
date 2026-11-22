@@ -51,6 +51,8 @@ class CaptureEncoder {
   /** tiles_width and tiles_height, when nonzero, ask for the desktop scaled by the largest whole factor that still covers them. */
   void beginSession(uint32_t generation, bool tiles = false, unsigned tiles_inflight = 1,
                     unsigned tiles_width = 0, unsigned tiles_height = 0);
+  /** Tells the capture that input arrived, so it leaves its quiet rate at once. */
+  void inputActivity();
   /** Makes the next tiles frame of this session a keyframe. */
   void requestKeyframe(uint32_t generation);
   void endSession(uint32_t generation);
