@@ -88,7 +88,7 @@ struct CaptureState {
   std::vector<uint8_t> image;
   std::vector<MacCapture*> sources;
   bool haveFrame = false;
-  /// True after a scaled frame reported dirty rects outside its own size, so they were mapped from display space.
+  /// True after a scaled frame reported dirty rects clearly outside its own size: rects are in display space from then on.
   bool dirtyMapped = false;
   std::string failure;
 
@@ -331,13 +331,16 @@ bool dirtyRects(id value, int width, int height, std::vector<DamageRect>& rects)
 }
 
 /// Dirty rects of a scaled frame in output pixels. On the Mac they were measured in output space;
-/// a rect past the output size means display space, so all rects are then scaled down and rounded outward.
+/// a rect clearly past the output size means display space, so all rects are then scaled down and rounded outward.
 bool CaptureState::scaledDirtyRects(id value, std::vector<DamageRect>& rects) {
   std::vector<DamageRect> raw;
   if (!dirtyRects(value, 1 << 20, 1 << 20, raw)) return false;
   int right = 0, bottom = 0;
   for (const auto& rect : raw) right = std::max(right, rect.x + rect.width), bottom = std::max(bottom, rect.y + rect.height);
-  const bool mapped = right > outWidth || bottom > outHeight;
+  // Rounding outward can reach a pixel or two past the frame; only a clear overshoot means display space.
+  const int slack = 4;
+  // Once a frame shows display space, keep it: a later small rect near the origin fits either space.
+  const bool mapped = dirtyMapped || right > outWidth + slack || bottom > outHeight + slack;
   if (mapped && !dirtyMapped) {
     dirtyMapped = true;
     std::fprintf(stderr, "capture: dirty rects reach %dx%d on a %dx%d frame; scaling them from %dx%d\n",
